@@ -2,11 +2,11 @@
 
 A wireless OSC button controller built on the Seeed XIAO ESP32-C3. Designed to trigger sounds in [LuPlayer](https://luplayer.org/) (Keyboard Mapped mode) via OSC over WiFi.
 
-OSC-Muis - Niels van der Hulst 2026
-
 ## What it does
 
 Press a physical button, and an OSC message is sent over WiFi to a target application (e.g. LuPlayer running on a PC). The device runs its own WiFi access point with a captive portal for configuration — no need to edit code to change settings.
+
+I gutted and modified a cheap computer mouse in order to have an actor discretely trigger some sound effects while on stage. I reused the mouse buttons for the triggers and the USB cable to power the ESP32.
 
 ## Features
 
