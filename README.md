@@ -1,6 +1,6 @@
 # OSC-Muis
 
-A wireless OSC button controller built on the Seeed XIAO ESP32-C3. Designed to trigger sounds in [LuPlayer](https://luplayer.org/) (Keyboard Mapped mode) via OSC over WiFi.
+A wireless OSC button controller built on the Seeed XIAO ESP32-C3. Designed to trigger sounds in [LuPlayer](https://luplayer.org/) (Keyboard Mapped or Eight Faders mode) via OSC over WiFi.
 
 ## What it does
 
@@ -11,12 +11,15 @@ I gutted and modified a cheap computer mouse in order to have an actor discretel
 ## Features
 
 - 2 button inputs with hardware interrupt-driven, zero-lag response
-- Configurable OSC target IP, port, and address format via web interface
+- Configurable OSC target IP, port, mode, and button channels via web interface
+- LuPlayer mode presets: Keyboard Mapped, Eight Faders, or custom format
+- Independent channel configuration for each button (e.g., button 1 → channel 5, button 2 → channel 7)
+- Automatic broadcasting to multiple networks when in AP + Station mode
 - Built-in WiFi access point with captive portal
 - Optional connection to an existing WiFi network (AP + Station mode)
 - Test button in the web interface to verify OSC connectivity
 - Battery level display (requires external voltage divider, see below)
-- All settings persist across reboots
+- All settings persist across reboots in flash memory
 
 ## Hardware
 
@@ -64,30 +67,47 @@ Connect the XIAO ESP32-C3 via USB-C and upload the sketch.
 5. Configure OSC settings:
    - **Target IP**: The IP address of the PC running LuPlayer (leave empty for broadcast)
    - **Port**: `8001` (LuPlayer default incoming port)
-   - **Address format**: `/kmpushX` for LuPlayer Keyboard Mapped mode
+   - **Mode**: Select from dropdown:
+     - **Keyboard Mapped** (`/kmpushX`) - Default for LuPlayer keyboard mapped mode
+     - **Eight Faders** (`8faderspushX`) - For LuPlayer eight faders mode
+     - **Custom** - Enter your own OSC address format
+   - **Button Channels**: Configure which channel each physical button triggers (default: 1 and 2)
 
 ### LuPlayer configuration
 
-1. Open LuPlayer and switch to **Keyboard Mapped** mode
+1. Open LuPlayer and switch to **Keyboard Mapped** or **Eight Faders** mode (match your OSC-Muis mode selection)
 2. Enable OSC control in LuPlayer settings
 3. Ensure the incoming OSC port matches the port configured on OSC-Muis (default: 8001)
-4. If using Windows, allow UDP traffic on the configured port in Windows Firewall
+4. Configure LuPlayer channels to match your button channel settings (default: channels 1 and 2)
+5. If using Windows, allow UDP traffic on the configured port in Windows Firewall
 
 ### Testing
 
 Use the **Test Button 1** in the captive portal to send a test OSC message. Install an OSC monitor like [Protokol](https://hexler.net/protokol) on the PC to verify messages are arriving.
+
+### Button channel mapping
+
+Each physical button can trigger any channel number (1-99). This is useful when you want to:
+- Skip certain channels (e.g., button 1 → channel 5, button 2 → channel 6)
+- Use non-sequential channels (e.g., button 1 → channel 1, button 2 → channel 10)
+- Match specific sound positions in LuPlayer
+
+**Example**: If Button 1 Channel is set to `5` in Keyboard Mapped mode, pressing physical button 1 will send `/kmpush5`.
 
 ## Troubleshooting
 
 - **No response from LuPlayer**: Verify both devices are on the same network. Try setting a specific target IP instead of broadcast. Check Windows Firewall.
 - **Double triggers**: The debounce cooldown is set to 800ms. Adjust `DEBOUNCE_MS` in the sketch if needed.
 - **Can't find the captive portal**: Connect to the OSC-MUIS WiFi network and navigate to `192.168.4.1` in a browser.
+- **AP + Station mode**: When connected to both its own AP network and an external WiFi network, OSC messages are automatically broadcast to both networks. Check the "Test Button 1" response to see all target IPs.
 
 ## File structure
 
 | File | Description |
 |------|-------------|
-| `OSC_buttons.ino` | Main sketch: button handling, OSC messaging, setup/loop |
+| `OSC_buttons.ino` | Main sketch: button handling, setup/loop |
 | `wifi_manager.h` | WiFi manager class definition and configuration structs |
-| `wifi_manager.cpp` | WiFi AP/STA management, captive portal, OSC settings storage |
+| `wifi_manager.cpp` | WiFi AP/STA management, captive portal, network handling |
+| `osc_manager.h` | OSC manager class definition for OSC protocol handling |
+| `osc_manager.cpp` | OSC message formatting, broadcasting, settings storage |
 | `portal_html.h` | Captive portal HTML/CSS/JS (stored in PROGMEM) |
