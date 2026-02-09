@@ -4,9 +4,10 @@
 #include "portal_html.h"
 #include "esp_wifi.h"
 
-// Static instance pointer for callbacks
+// Static instance pointers for callbacks
 static WiFiManager* _instance = nullptr;
 static const WiFiManagerConfig* _configPtr = nullptr;
+static TemplateProcessorCallback _customProcessorCallback = nullptr;
 
 // Template processor for HTML placeholders
 static String processTemplate(const String& var) {
@@ -14,34 +15,34 @@ static String processTemplate(const String& var) {
 
     const WiFiManagerState& state = _instance->getState();
 
+    // WiFi-related variables
     if (var == "BATTERY") return String(state.batteryPercent);
     if (var == "MODE") return state.staConnected ? "AP + Station" : "Access Point";
     if (var == "STA_SSID") return state.staConnected ? state.staSSID : "-";
     if (var == "STA_IP") return state.staConnected ? WiFi.localIP().toString() : "-";
     if (var == "STA_STATUS_CLASS") return state.staConnected ? "" : "hidden";
     if (var == "AP_CLIENTS") return String(WiFi.softAPgetStationNum());
-    if (var == "OSC_PORT") return String(state.oscPort);
-    if (var == "OSC_TARGET_IP") return state.oscTargetIP.length() > 0 ? state.oscTargetIP : "broadcast";
-    if (var == "OSC_ADDRESS_FORMAT") return state.oscAddressFormat;
     if (var == "AP_SSID") return _configPtr ? String(_configPtr->apSSID) : "";
     if (var == "AP_IP") return WiFi.softAPIP().toString();
     if (var == "DISCONNECT_CLASS") return state.staConnected ? "" : "hidden";
     if (var == "PORTAL_TITLE") return _configPtr ? String(_configPtr->portalTitle) : "WiFi Manager";
     if (var == "PORTAL_SUBTITLE") return _configPtr ? String(_configPtr->portalSubtitle) : "";
+
+    // Try custom processor if registered
+    if (_customProcessorCallback) {
+        String result = _customProcessorCallback(var);
+        if (result.length() > 0) return result;
+    }
+
     return String();
 }
+
 
 WiFiManager::WiFiManager() : _webServer(80) {
     _state.staEnabled = false;
     _state.staConnected = false;
     _state.batteryPercent = 100;
     _state.broadcastIP = IPAddress(192, 168, 4, 255);
-
-    // OSC defaults
-    _state.oscPort = 8001;  // LuPlayer default incoming port
-    _state.oscTargetIP = "";  // Empty = broadcast
-    _state.oscAddressFormat = "/kmpush";  // Default format for Keyboard Mapped mode
-    _state.oscTestRequested = false;
 }
 
 void WiFiManager::begin(const WiFiManagerConfig& config) {
@@ -237,66 +238,6 @@ void WiFiManager::initCaptivePortal() {
         Serial.println("Disconnected from WiFi, AP only mode");
     });
 
-    // Get OSC settings
-    _webServer.on("/osc", HTTP_GET, [this](AsyncWebServerRequest *request) {
-        String json = "{";
-        json += "\"port\":" + String(_state.oscPort) + ",";
-        json += "\"targetip\":\"" + _state.oscTargetIP + "\",";
-        json += "\"addressFormat\":\"" + _state.oscAddressFormat + "\"";
-        json += "}";
-        request->send(200, "application/json", json);
-    });
-
-    // Save OSC settings
-    _webServer.on("/osc", HTTP_POST, [this](AsyncWebServerRequest *request) {
-        bool changed = false;
-
-        if (request->hasParam("port", true)) {
-            int port = request->getParam("port", true)->value().toInt();
-            if (port > 0 && port < 65536) {
-                _state.oscPort = port;
-                changed = true;
-            }
-        }
-
-        if (request->hasParam("targetip", true)) {
-            _state.oscTargetIP = request->getParam("targetip", true)->value();
-            changed = true;
-        }
-
-        if (request->hasParam("addressFormat", true)) {
-            _state.oscAddressFormat = request->getParam("addressFormat", true)->value();
-            changed = true;
-        }
-
-        if (changed) {
-            _preferences.begin("osc", false);
-            _preferences.putInt("port", _state.oscPort);
-            _preferences.putString("targetip", _state.oscTargetIP);
-            _preferences.putString("addrfmt", _state.oscAddressFormat);
-            _preferences.end();
-
-            Serial.printf("OSC settings saved: port=%d, target=%s, format=%s\n",
-                _state.oscPort,
-                _state.oscTargetIP.length() > 0 ? _state.oscTargetIP.c_str() : "broadcast",
-                _state.oscAddressFormat.c_str());
-        }
-
-        request->send(200, "application/json", "{\"success\":true}");
-    });
-
-    // Test OSC - sets a flag that the main sketch checks
-    _webServer.on("/testosc", HTTP_POST, [this](AsyncWebServerRequest *request) {
-        String address = formatOSCAddress(1);
-        IPAddress target = getOSCTargetIPAddress();
-        String json = "{\"address\":\"" + address + "\",\"target\":\"" + target.toString() + ":" + String(_state.oscPort) + "\"}";
-        request->send(200, "application/json", json);
-
-        // Set flag for main loop to send test message
-        _state.oscTestRequested = true;
-        Serial.println("OSC test requested via web UI");
-    });
-
     // Handle all other requests
     _webServer.onNotFound([](AsyncWebServerRequest *request) {
         request->redirect("/");
@@ -318,20 +259,9 @@ void WiFiManager::loadSavedWiFi() {
     _state.staEnabled = _preferences.getBool("enabled", false);
     _preferences.end();
 
-    // Load OSC settings
-    _preferences.begin("osc", true);
-    _state.oscPort = _preferences.getInt("port", 8001);
-    _state.oscTargetIP = _preferences.getString("targetip", "");
-    _state.oscAddressFormat = _preferences.getString("addrfmt", "/kmpush");
-    _preferences.end();
-
     if (_state.staEnabled && _state.staSSID.length() > 0) {
         Serial.printf("Found saved WiFi: %s\n", _state.staSSID.c_str());
     }
-    Serial.printf("OSC config: port=%d, target=%s, format=%s\n",
-        _state.oscPort,
-        _state.oscTargetIP.length() > 0 ? _state.oscTargetIP.c_str() : "broadcast",
-        _state.oscAddressFormat.c_str());
 }
 
 void WiFiManager::connectToSavedWiFi() {
@@ -413,97 +343,36 @@ const WiFiManagerState& WiFiManager::getState() const {
     return _state;
 }
 
-// OSC configuration methods
-void WiFiManager::setOSCPort(int port) {
-    _state.oscPort = port;
+void WiFiManager::registerTemplateCallback(TemplateProcessorCallback callback) {
+    _customProcessorCallback = callback;
 }
 
-int WiFiManager::getOSCPort() const {
-    return _state.oscPort;
+AsyncWebServer& WiFiManager::getWebServer() {
+    return _webServer;
 }
 
-void WiFiManager::setOSCTargetIP(const String& ip) {
-    _state.oscTargetIP = ip;
-}
+std::vector<IPAddress> WiFiManager::getBroadcastIPAddresses() const {
+    std::vector<IPAddress> addresses;
 
-String WiFiManager::getOSCTargetIP() const {
-    return _state.oscTargetIP;
-}
-
-IPAddress WiFiManager::getOSCTargetIPAddress() const {
-    if (_state.oscTargetIP.length() > 0) {
-        IPAddress ip;
-        if (ip.fromString(_state.oscTargetIP)) {
-            return ip;
-        }
-    }
-    // Fall back to broadcast IP
-    return _state.broadcastIP;
-}
-
-std::vector<IPAddress> WiFiManager::getOSCTargetIPAddresses() const {
-    std::vector<IPAddress> targets;
-
-    // If custom target IP is specified, use only that
-    if (_state.oscTargetIP.length() > 0) {
-        IPAddress ip;
-        if (ip.fromString(_state.oscTargetIP)) {
-            targets.push_back(ip);
-            return targets;
-        }
-    }
-
-    // Broadcasting mode - send to all connected networks
+    // Get all active network broadcast addresses
     wifi_mode_t mode = WiFi.getMode();
 
     // Add STA network broadcast if connected
     if ((mode == WIFI_AP_STA || mode == WIFI_STA) && _state.staConnected) {
         IPAddress staBroadcast = WiFi.localIP();
         staBroadcast[3] = 255;
-        targets.push_back(staBroadcast);
+        addresses.push_back(staBroadcast);
     }
 
     // Add AP network broadcast if AP is active
     if (mode == WIFI_AP_STA || mode == WIFI_AP) {
-        targets.push_back(IPAddress(192, 168, 4, 255));
+        addresses.push_back(IPAddress(192, 168, 4, 255));
     }
 
     // Fallback to AP broadcast if no networks are available
-    if (targets.empty()) {
-        targets.push_back(IPAddress(192, 168, 4, 255));
+    if (addresses.empty()) {
+        addresses.push_back(IPAddress(192, 168, 4, 255));
     }
 
-    return targets;
-}
-
-void WiFiManager::setOSCAddressFormat(const String& format) {
-    _state.oscAddressFormat = format;
-}
-
-String WiFiManager::getOSCAddressFormat() const {
-    return _state.oscAddressFormat;
-}
-
-String WiFiManager::formatOSCAddress(int buttonNumber) const {
-    String addr = _state.oscAddressFormat;
-
-    // If format ends with a number placeholder or nothing, append the button number
-    // Supported formats: "/kmpush", "kmpush", "/km/push/"
-    if (addr.endsWith("/")) {
-        // Format like "/km/push/" -> "/km/push/1"
-        addr += String(buttonNumber);
-    } else {
-        // Format like "/kmpush" or "kmpush" -> "/kmpush1" or "kmpush1"
-        addr += String(buttonNumber);
-    }
-
-    return addr;
-}
-
-bool WiFiManager::checkAndClearTestRequest() {
-    if (_state.oscTestRequested) {
-        _state.oscTestRequested = false;
-        return true;
-    }
-    return false;
+    return addresses;
 }

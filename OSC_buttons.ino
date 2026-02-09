@@ -16,6 +16,7 @@
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
 #include "wifi_manager.h"
+#include "osc_manager.h"
 
 // === Configuration ===
 // OSC port is now configurable via web interface (default: 8001 for LuPlayer)
@@ -32,6 +33,7 @@ const unsigned long DEBOUNCE_MS = 800;
 // === Global variables ===
 WiFiUDP udp;
 WiFiManager wifiManager;
+OSCManager oscManager;
 
 volatile bool button1Pressed = false;
 volatile bool button2Pressed = false;
@@ -57,26 +59,7 @@ void IRAM_ATTR onButton2Press() {
 
 // === OSC Functions ===
 void sendOSCButton(int buttonNumber) {
-    // Build the OSC address using configured format
-    String address = wifiManager.formatOSCAddress(buttonNumber);
-    int port = wifiManager.getOSCPort();
-
-    // Get all target IPs (will be multiple when in AP+STA mode)
-    std::vector<IPAddress> targets = wifiManager.getOSCTargetIPAddresses();
-
-    // Send to all targets
-    for (const IPAddress& targetIP : targets) {
-        OSCMessage msg(address.c_str());
-        msg.add(1.0f);  // Send a single float value of 1.0 (common trigger format)
-
-        udp.beginPacket(targetIP, port);
-        msg.send(udp);
-        udp.endPacket();
-        msg.empty();
-
-        Serial.printf("OSC sent: %s -> %s:%d (value=1.0)\n",
-            address.c_str(), targetIP.toString().c_str(), port);
-    }
+    oscManager.sendButton(udp, buttonNumber);
 }
 
 // === Button Handling ===
@@ -142,12 +125,11 @@ void setup() {
     };
     wifiManager.begin(wifiConfig);
 
+    // Initialize OSC manager (registers web endpoints and template callback)
+    oscManager.begin(wifiManager.getWebServer(), wifiManager);
+
     // Start UDP for OSC (use configured port for listening, though we mainly send)
-    udp.begin(wifiManager.getOSCPort());
-    Serial.printf("OSC configured: port=%d, target=%s, format=%s\n",
-        wifiManager.getOSCPort(),
-        wifiManager.getOSCTargetIP().length() > 0 ? wifiManager.getOSCTargetIP().c_str() : "broadcast",
-        wifiManager.getOSCAddressFormat().c_str());
+    udp.begin(oscManager.getPort());
 
     Serial.println("Ready! Waiting for button presses...");
 }
@@ -168,7 +150,7 @@ void loop() {
     handleButtons();
 
     // Handle test request from web interface
-    if (wifiManager.checkAndClearTestRequest()) {
+    if (oscManager.checkAndClearTestRequest()) {
         sendOSCButton(1);
     }
 }

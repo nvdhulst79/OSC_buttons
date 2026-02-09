@@ -10,6 +10,10 @@
 #include <Preferences.h>
 #include <vector>
 
+// Callback type for custom template variable processing
+// Return non-empty string if variable is handled, empty string otherwise
+typedef String (*TemplateProcessorCallback)(const String& var);
+
 // Configuration structure for WiFi manager
 struct WiFiManagerConfig {
     const char* apSSID;
@@ -29,14 +33,6 @@ struct WiFiManagerState {
     bool staConnected;
     int batteryPercent;
     IPAddress broadcastIP;       // Current broadcast address
-
-    // OSC settings
-    String oscTargetIP;          // Target IP for OSC (empty = broadcast)
-    int oscPort;                 // OSC port (default 8001 for LuPlayer)
-    String oscAddressFormat;     // Address format: "kmpush" or "/kmpush" or "/km/push/"
-
-    // Test trigger flag (set by web UI, cleared by main loop)
-    volatile bool oscTestRequested;
 };
 
 // Default configuration values
@@ -55,6 +51,9 @@ public:
 
     // Get current broadcast IP (updates when STA connects/disconnects)
     IPAddress getBroadcastIP() const;
+
+    // Get all broadcast IPs (AP + STA when in dual mode)
+    std::vector<IPAddress> getBroadcastIPAddresses() const;
 
     // Get AP IP address
     IPAddress getAPIP() const;
@@ -77,17 +76,12 @@ public:
     // Get current state (for advanced use)
     const WiFiManagerState& getState() const;
 
-    // OSC configuration
-    void setOSCPort(int port);
-    int getOSCPort() const;
-    void setOSCTargetIP(const String& ip);
-    String getOSCTargetIP() const;
-    IPAddress getOSCTargetIPAddress() const;  // Returns broadcast IP if target is empty
-    std::vector<IPAddress> getOSCTargetIPAddresses() const;  // Returns all broadcast IPs (AP + STA when in dual mode)
-    void setOSCAddressFormat(const String& format);
-    String getOSCAddressFormat() const;
-    String formatOSCAddress(int buttonNumber) const;  // Build address for button
-    bool checkAndClearTestRequest();  // Check if test was requested, clears flag
+    // Register callback for custom template variable processing
+    // This allows other modules to provide their own template variables
+    void registerTemplateCallback(TemplateProcessorCallback callback);
+
+    // Get web server for registering additional endpoints
+    AsyncWebServer& getWebServer();
 
 private:
     WiFiManagerConfig _config;
