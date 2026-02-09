@@ -3,6 +3,7 @@
 #include "wifi_manager.h"
 #include "portal_html.h"
 #include "esp_wifi.h"
+#include <ESPmDNS.h>
 
 // Static instance pointers for callbacks
 static WiFiManager* _instance = nullptr;
@@ -218,6 +219,11 @@ void WiFiManager::initCaptivePortal() {
             _state.broadcastIP[3] = 255;
             _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
 
+            if (MDNS.begin("osc-muis")) {
+                MDNS.addService("http", "tcp", 80);
+                Serial.println("mDNS started: http://osc-muis.local");
+            }
+
             String response = "{\"success\":true,\"ip\":\"" + WiFi.localIP().toString() + "\"}";
             request->send(200, "application/json", response);
             Serial.printf("Connected to %s, IP: %s\n", _state.staSSID.c_str(), WiFi.localIP().toString().c_str());
@@ -238,6 +244,7 @@ void WiFiManager::initCaptivePortal() {
         _state.staEnabled = false;
         _state.staConnected = false;
         _state.apShutdownTime = 0;  // Cancel AP shutdown
+        MDNS.end();
         WiFi.disconnect(true);
         WiFi.mode(WIFI_AP);
 
@@ -300,6 +307,11 @@ void WiFiManager::connectToSavedWiFi() {
         _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
         Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
         Serial.println("AP will shut down in 10 minutes");
+
+        if (MDNS.begin("osc-muis")) {
+            MDNS.addService("http", "tcp", 80);
+            Serial.println("mDNS started: http://osc-muis.local");
+        }
     } else {
         _state.staConnected = false;
         WiFi.mode(WIFI_AP);  // Revert to AP-only mode when connection fails
@@ -335,6 +347,11 @@ void WiFiManager::updateConnectionStatus() {
         _state.broadcastIP = WiFi.localIP();
         _state.broadcastIP[3] = 255;
         Serial.printf("WiFi reconnected, IP: %s\n", WiFi.localIP().toString().c_str());
+
+        if (MDNS.begin("osc-muis")) {
+            MDNS.addService("http", "tcp", 80);
+            Serial.println("mDNS restarted: http://osc-muis.local");
+        }
     } else if (_state.staConnected && WiFi.status() != WL_CONNECTED) {
         _state.staConnected = false;
         _state.broadcastIP = IPAddress(192, 168, 4, 255);

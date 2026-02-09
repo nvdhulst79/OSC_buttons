@@ -16,7 +16,10 @@ I gutted and modified a cheap computer mouse in order to have an actor discretel
 - Independent channel configuration for each button (e.g., button 1 → channel 5, button 2 → channel 7)
 - Automatic broadcasting to multiple networks when in AP + Station mode
 - Built-in WiFi access point with captive portal
+- Automatic AP shutdown after 10 minutes when connected to WiFi, switching to power-saving STA-only mode with modem sleep
+- AP automatically recovers if the WiFi connection is lost
 - Optional connection to an existing WiFi network (AP + Station mode)
+- mDNS support: access the web interface at `http://osc-muis.local` when connected to a WiFi network
 - Test button in the web interface to verify OSC connectivity
 - Battery level display (requires external voltage divider, see below)
 - All settings persist across reboots in flash memory
