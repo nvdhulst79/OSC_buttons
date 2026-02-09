@@ -17,6 +17,8 @@ static String oscTemplateProcessor(const String& var) {
         return target.length() > 0 ? target : "broadcast";
     }
     if (var == "OSC_ADDRESS_FORMAT") return _oscInstance->getAddressFormat();
+    if (var == "OSC_BUTTON1_CHANNEL") return String(_oscInstance->getButton1Channel());
+    if (var == "OSC_BUTTON2_CHANNEL") return String(_oscInstance->getButton2Channel());
 
     return String();  // Variable not handled
 }
@@ -26,6 +28,8 @@ OSCManager::OSCManager() {
     _state.port = 8001;  // LuPlayer default incoming port
     _state.targetIP = "";  // Empty = broadcast
     _state.addressFormat = "/kmpush";  // Default format for Keyboard Mapped mode
+    _state.button1Channel = 1;  // Default channel for button 1
+    _state.button2Channel = 2;  // Default channel for button 2
     _state.testRequested = false;
 }
 
@@ -53,6 +57,8 @@ void OSCManager::loadSettings() {
     _state.port = _preferences.getInt("port", 8001);
     _state.targetIP = _preferences.getString("targetip", "");
     _state.addressFormat = _preferences.getString("addrfmt", "/kmpush");
+    _state.button1Channel = _preferences.getInt("btn1ch", 1);
+    _state.button2Channel = _preferences.getInt("btn2ch", 2);
     _preferences.end();
 }
 
@@ -61,6 +67,8 @@ void OSCManager::saveSettings() {
     _preferences.putInt("port", _state.port);
     _preferences.putString("targetip", _state.targetIP);
     _preferences.putString("addrfmt", _state.addressFormat);
+    _preferences.putInt("btn1ch", _state.button1Channel);
+    _preferences.putInt("btn2ch", _state.button2Channel);
     _preferences.end();
 }
 
@@ -106,13 +114,31 @@ void OSCManager::registerWebEndpoints(AsyncWebServer& webServer) {
             changed = true;
         }
 
+        if (request->hasParam("button1Channel", true)) {
+            int ch = request->getParam("button1Channel", true)->value().toInt();
+            if (ch > 0 && ch < 100) {
+                _oscInstance->_state.button1Channel = ch;
+                changed = true;
+            }
+        }
+
+        if (request->hasParam("button2Channel", true)) {
+            int ch = request->getParam("button2Channel", true)->value().toInt();
+            if (ch > 0 && ch < 100) {
+                _oscInstance->_state.button2Channel = ch;
+                changed = true;
+            }
+        }
+
         if (changed) {
             _oscInstance->saveSettings();
 
-            Serial.printf("OSC settings saved: port=%d, target=%s, format=%s\n",
+            Serial.printf("OSC settings saved: port=%d, target=%s, format=%s, btn1=%d, btn2=%d\n",
                 _oscInstance->_state.port,
                 _oscInstance->_state.targetIP.length() > 0 ? _oscInstance->_state.targetIP.c_str() : "broadcast",
-                _oscInstance->_state.addressFormat.c_str());
+                _oscInstance->_state.addressFormat.c_str(),
+                _oscInstance->_state.button1Channel,
+                _oscInstance->_state.button2Channel);
         }
 
         request->send(200, "application/json", "{\"success\":true}");
@@ -168,6 +194,22 @@ String OSCManager::getAddressFormat() const {
     return _state.addressFormat;
 }
 
+void OSCManager::setButton1Channel(int channel) {
+    _state.button1Channel = channel;
+}
+
+int OSCManager::getButton1Channel() const {
+    return _state.button1Channel;
+}
+
+void OSCManager::setButton2Channel(int channel) {
+    _state.button2Channel = channel;
+}
+
+int OSCManager::getButton2Channel() const {
+    return _state.button2Channel;
+}
+
 std::vector<IPAddress> OSCManager::getTargetIPAddresses() const {
     std::vector<IPAddress> targets;
 
@@ -207,8 +249,11 @@ String OSCManager::formatAddress(int buttonNumber) const {
 }
 
 void OSCManager::sendButton(WiFiUDP& udp, int buttonNumber) {
-    // Build the OSC address using configured format
-    String address = formatAddress(buttonNumber);
+    // Map button number to configured channel
+    int channel = (buttonNumber == 1) ? _state.button1Channel : _state.button2Channel;
+
+    // Build the OSC address using configured format and channel
+    String address = formatAddress(channel);
 
     // Get all target IPs (will be multiple when in AP+STA mode)
     std::vector<IPAddress> targets = getTargetIPAddresses();
@@ -223,8 +268,8 @@ void OSCManager::sendButton(WiFiUDP& udp, int buttonNumber) {
         udp.endPacket();
         msg.empty();
 
-        Serial.printf("OSC sent: %s -> %s:%d (value=1.0)\n",
-            address.c_str(), targetIP.toString().c_str(), _state.port);
+        Serial.printf("OSC sent: %s (btn%d->ch%d) -> %s:%d (value=1.0)\n",
+            address.c_str(), buttonNumber, channel, targetIP.toString().c_str(), _state.port);
     }
 }
 

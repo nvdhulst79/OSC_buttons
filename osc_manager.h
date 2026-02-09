@@ -26,6 +26,10 @@ public:
     String getTargetIP() const;
     void setAddressFormat(const String& format);
     String getAddressFormat() const;
+    void setButton1Channel(int channel);
+    int getButton1Channel() const;
+    void setButton2Channel(int channel);
+    int getButton2Channel() const;
 
     // Get target IPs for sending (uses WiFiManager's broadcast IPs)
     std::vector<IPAddress> getTargetIPAddresses() const;
@@ -46,7 +50,9 @@ private:
     struct {
         String targetIP;          // Target IP for OSC (empty = broadcast)
         int port;                 // OSC port (default 8001 for LuPlayer)
-        String addressFormat;     // Address format: "kmpush" or "/kmpush" or "/km/push/"
+        String addressFormat;     // LuPlayer mode: "kmpush" (Keyboard Mapped), "8faderspush" (Eight Faders), or custom
+        int button1Channel;       // Channel number for button 1 (default 1)
+        int button2Channel;       // Channel number for button 2 (default 2)
         volatile bool testRequested;  // Test trigger flag (set by web UI, cleared by main loop)
     } _state;
 

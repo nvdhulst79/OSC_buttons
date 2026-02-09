@@ -127,14 +127,23 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                 <span class="label">Address Format</span>
                 <span class="value" id="oscCurrentFormat">%OSC_ADDRESS_FORMAT%</span>
             </div>
+            <div class="status-row">
+                <span class="label">Button Channels</span>
+                <span class="value" id="oscCurrentChannels">Btn1→%OSC_BUTTON1_CHANNEL%, Btn2→%OSC_BUTTON2_CHANNEL%</span>
+            </div>
 
             <input type="text" id="oscTargetIP" placeholder="Target IP (empty = broadcast)" value="">
             <input type="number" id="oscPort" placeholder="Port (default: 8001)" value="%OSC_PORT%" min="1" max="65535">
-            <select id="oscFormat">
-                <option value="/kmpush">/kmpushX (standard OSC)</option>
-                <option value="kmpush">kmpushX (no leading slash)</option>
-                <option value="/km/push/">/km/push/X (path style)</option>
+            <select id="oscMode" onchange="handleModeChange()">
+                <option value="/kmpush">Keyboard Mapped (/kmpushX)</option>
+                <option value="8faderspush">Eight Faders (8faderspushX)</option>
+                <option value="custom">Custom</option>
             </select>
+            <input type="text" id="oscCustomFormat" class="hidden" placeholder="Custom format (e.g., /myformat)" style="margin-top: 8px;">
+            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                <input type="number" id="oscButton1Channel" placeholder="Button 1 Channel" value="%OSC_BUTTON1_CHANNEL%" min="1" max="99" style="width: 50%%;">
+                <input type="number" id="oscButton2Channel" placeholder="Button 2 Channel" value="%OSC_BUTTON2_CHANNEL%" min="1" max="99" style="width: 50%%;">
+            </div>
             <button class="btn-primary" onclick="saveOSC()">Save OSC Settings</button>
             <button class="btn-secondary" onclick="testOSC()">Test Button 1</button>
             <div id="oscMessage"></div>
@@ -251,15 +260,53 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                 .then(() => location.reload());
         }
 
+        function handleModeChange() {
+            const mode = document.getElementById('oscMode').value;
+            const customInput = document.getElementById('oscCustomFormat');
+
+            if (mode === 'custom') {
+                customInput.classList.remove('hidden');
+            } else {
+                customInput.classList.add('hidden');
+            }
+        }
+
         function saveOSC() {
             const port = document.getElementById('oscPort').value;
             const targetip = document.getElementById('oscTargetIP').value;
-            const addressFormat = document.getElementById('oscFormat').value;
+            const mode = document.getElementById('oscMode').value;
+            const button1Channel = document.getElementById('oscButton1Channel').value;
+            const button2Channel = document.getElementById('oscButton2Channel').value;
+
+            // Validate button channels
+            if (!button1Channel || button1Channel < 1 || button1Channel > 99) {
+                document.getElementById('oscMessage').innerHTML =
+                    '<div class="message error">Button 1 channel must be between 1-99</div>';
+                return;
+            }
+            if (!button2Channel || button2Channel < 1 || button2Channel > 99) {
+                document.getElementById('oscMessage').innerHTML =
+                    '<div class="message error">Button 2 channel must be between 1-99</div>';
+                return;
+            }
+
+            // Use custom format if "custom" is selected, otherwise use the preset value
+            let addressFormat;
+            if (mode === 'custom') {
+                addressFormat = document.getElementById('oscCustomFormat').value;
+                if (!addressFormat) {
+                    document.getElementById('oscMessage').innerHTML =
+                        '<div class="message error">Please enter a custom format</div>';
+                    return;
+                }
+            } else {
+                addressFormat = mode;
+            }
 
             fetch('/osc', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: `port=${port}&targetip=${encodeURIComponent(targetip)}&addressFormat=${encodeURIComponent(addressFormat)}`
+                body: `port=${port}&targetip=${encodeURIComponent(targetip)}&addressFormat=${encodeURIComponent(addressFormat)}&button1Channel=${button1Channel}&button2Channel=${button2Channel}`
             })
             .then(r => r.json())
             .then(result => {
@@ -269,6 +316,8 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('oscCurrentTarget').textContent =
                         (targetip || 'broadcast') + ':' + port;
                     document.getElementById('oscCurrentFormat').textContent = addressFormat;
+                    document.getElementById('oscCurrentChannels').textContent =
+                        'Btn1→' + button1Channel + ', Btn2→' + button2Channel;
                 }
             });
         }
@@ -277,8 +326,9 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             fetch('/testosc', {method: 'POST'})
             .then(r => r.json())
             .then(result => {
+                const targetsStr = result.targets.join(', ');
                 document.getElementById('oscMessage').innerHTML =
-                    '<div class="message success">Sent: ' + result.address + ' to ' + result.target + '</div>';
+                    '<div class="message success">Sent: ' + result.address + ' to ' + targetsStr + '</div>';
             })
             .catch(e => {
                 document.getElementById('oscMessage').innerHTML =
@@ -289,13 +339,27 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
         // Load current OSC format into dropdown
         window.addEventListener('load', function() {
             const currentFormat = '%OSC_ADDRESS_FORMAT%';
-            const select = document.getElementById('oscFormat');
-            for (let i = 0; i < select.options.length; i++) {
-                if (select.options[i].value === currentFormat) {
-                    select.selectedIndex = i;
+            const modeSelect = document.getElementById('oscMode');
+            const customInput = document.getElementById('oscCustomFormat');
+
+            // Check if current format matches a preset
+            let foundPreset = false;
+            for (let i = 0; i < modeSelect.options.length; i++) {
+                if (modeSelect.options[i].value === currentFormat) {
+                    modeSelect.selectedIndex = i;
+                    foundPreset = true;
                     break;
                 }
             }
+
+            // If no preset match, it's a custom format
+            if (!foundPreset) {
+                // Select "custom" option (last option)
+                modeSelect.value = 'custom';
+                customInput.value = currentFormat;
+                customInput.classList.remove('hidden');
+            }
+
             // Load target IP
             const target = '%OSC_TARGET_IP%';
             if (target !== 'broadcast') {
