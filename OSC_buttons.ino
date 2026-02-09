@@ -59,22 +59,24 @@ void IRAM_ATTR onButton2Press() {
 void sendOSCButton(int buttonNumber) {
     // Build the OSC address using configured format
     String address = wifiManager.formatOSCAddress(buttonNumber);
-    OSCMessage msg(address.c_str());
-
-    // Send a single float value of 1.0 (common trigger format)
-    msg.add(1.0f);
-
-    // Get target from configuration
-    IPAddress targetIP = wifiManager.getOSCTargetIPAddress();
     int port = wifiManager.getOSCPort();
 
-    udp.beginPacket(targetIP, port);
-    msg.send(udp);
-    udp.endPacket();
-    msg.empty();
+    // Get all target IPs (will be multiple when in AP+STA mode)
+    std::vector<IPAddress> targets = wifiManager.getOSCTargetIPAddresses();
 
-    Serial.printf("OSC sent: %s -> %s:%d (value=1.0)\n",
-        address.c_str(), targetIP.toString().c_str(), port);
+    // Send to all targets
+    for (const IPAddress& targetIP : targets) {
+        OSCMessage msg(address.c_str());
+        msg.add(1.0f);  // Send a single float value of 1.0 (common trigger format)
+
+        udp.beginPacket(targetIP, port);
+        msg.send(udp);
+        udp.endPacket();
+        msg.empty();
+
+        Serial.printf("OSC sent: %s -> %s:%d (value=1.0)\n",
+            address.c_str(), targetIP.toString().c_str(), port);
+    }
 }
 
 // === Button Handling ===

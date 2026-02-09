@@ -146,9 +146,13 @@ void WiFiManager::initCaptivePortal() {
         // Return status if scan not ready yet
         if (n == WIFI_SCAN_FAILED) {
             // Ensure station mode is enabled for scanning
-            if (WiFi.getMode() == WIFI_AP) {
+            wifi_mode_t currentMode = WiFi.getMode();
+            if (currentMode == WIFI_AP) {
                 WiFi.mode(WIFI_AP_STA);
                 WiFi.disconnect();  // Disconnect STA but keep mode
+            } else if (currentMode == WIFI_AP_STA && !_instance->isSTAConnected()) {
+                // If in AP_STA mode but not connected, ensure clean state for scanning
+                WiFi.disconnect();
             }
             WiFi.scanNetworks(true);  // Start async scan
             request->send(200, "application/json", "{\"status\":\"scanning\"}");
@@ -192,6 +196,7 @@ void WiFiManager::initCaptivePortal() {
 
         // Attempt connection
         WiFi.mode(WIFI_AP_STA);
+        WiFi.disconnect();  // Ensure clean state before new connection
         WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
 
         int attempts = 0;
@@ -350,7 +355,8 @@ void WiFiManager::connectToSavedWiFi() {
         Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
     } else {
         _state.staConnected = false;
-        Serial.println("\nFailed to connect, staying in AP mode");
+        WiFi.mode(WIFI_AP);  // Revert to AP-only mode when connection fails
+        Serial.println("\nFailed to connect, reverted to AP-only mode");
     }
 }
 
@@ -433,6 +439,41 @@ IPAddress WiFiManager::getOSCTargetIPAddress() const {
     }
     // Fall back to broadcast IP
     return _state.broadcastIP;
+}
+
+std::vector<IPAddress> WiFiManager::getOSCTargetIPAddresses() const {
+    std::vector<IPAddress> targets;
+
+    // If custom target IP is specified, use only that
+    if (_state.oscTargetIP.length() > 0) {
+        IPAddress ip;
+        if (ip.fromString(_state.oscTargetIP)) {
+            targets.push_back(ip);
+            return targets;
+        }
+    }
+
+    // Broadcasting mode - send to all connected networks
+    wifi_mode_t mode = WiFi.getMode();
+
+    // Add STA network broadcast if connected
+    if ((mode == WIFI_AP_STA || mode == WIFI_STA) && _state.staConnected) {
+        IPAddress staBroadcast = WiFi.localIP();
+        staBroadcast[3] = 255;
+        targets.push_back(staBroadcast);
+    }
+
+    // Add AP network broadcast if AP is active
+    if (mode == WIFI_AP_STA || mode == WIFI_AP) {
+        targets.push_back(IPAddress(192, 168, 4, 255));
+    }
+
+    // Fallback to AP broadcast if no networks are available
+    if (targets.empty()) {
+        targets.push_back(IPAddress(192, 168, 4, 255));
+    }
+
+    return targets;
 }
 
 void WiFiManager::setOSCAddressFormat(const String& format) {

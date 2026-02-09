@@ -8,6 +8,7 @@
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
+#include <vector>
 
 // Configuration structure for WiFi manager
 struct WiFiManagerConfig {
@@ -82,6 +83,7 @@ public:
     void setOSCTargetIP(const String& ip);
     String getOSCTargetIP() const;
     IPAddress getOSCTargetIPAddress() const;  // Returns broadcast IP if target is empty
+    std::vector<IPAddress> getOSCTargetIPAddresses() const;  // Returns all broadcast IPs (AP + STA when in dual mode)
     void setOSCAddressFormat(const String& format);
     String getOSCAddressFormat() const;
     String formatOSCAddress(int buttonNumber) const;  // Build address for button
