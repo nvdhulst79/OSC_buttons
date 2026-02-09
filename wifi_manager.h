@@ -33,6 +33,10 @@ struct WiFiManagerState {
     bool staConnected;
     int batteryPercent;
     IPAddress broadcastIP;       // Current broadcast address
+
+    // AP lifecycle
+    bool apActive;               // Whether the AP is currently running
+    unsigned long apShutdownTime; // millis() when AP should shut down (0 = no shutdown scheduled)
 };
 
 // Default configuration values
@@ -63,6 +67,9 @@ public:
 
     // Check if connected to external WiFi (STA mode)
     bool isSTAConnected() const;
+
+    // Check if AP is currently active
+    bool isAPActive() const;
 
     // Get STA IP address (if connected)
     IPAddress getSTAIP() const;

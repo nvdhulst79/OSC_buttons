@@ -17,7 +17,11 @@ static String processTemplate(const String& var) {
 
     // WiFi-related variables
     if (var == "BATTERY") return String(state.batteryPercent);
-    if (var == "MODE") return state.staConnected ? "AP + Station" : "Access Point";
+    if (var == "MODE") {
+        if (!state.apActive && state.staConnected) return "Station (power save)";
+        if (state.staConnected) return "AP + Station";
+        return "Access Point";
+    }
     if (var == "STA_SSID") return state.staConnected ? state.staSSID : "-";
     if (var == "STA_IP") return state.staConnected ? WiFi.localIP().toString() : "-";
     if (var == "STA_STATUS_CLASS") return state.staConnected ? "" : "hidden";
@@ -43,6 +47,8 @@ WiFiManager::WiFiManager() : _webServer(80) {
     _state.staConnected = false;
     _state.batteryPercent = 100;
     _state.broadcastIP = IPAddress(192, 168, 4, 255);
+    _state.apActive = true;
+    _state.apShutdownTime = 0;
 }
 
 void WiFiManager::begin(const WiFiManagerConfig& config) {
@@ -210,10 +216,12 @@ void WiFiManager::initCaptivePortal() {
             _state.staConnected = true;
             _state.broadcastIP = WiFi.localIP();
             _state.broadcastIP[3] = 255;
+            _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
 
             String response = "{\"success\":true,\"ip\":\"" + WiFi.localIP().toString() + "\"}";
             request->send(200, "application/json", response);
             Serial.printf("Connected to %s, IP: %s\n", _state.staSSID.c_str(), WiFi.localIP().toString().c_str());
+            Serial.println("AP will shut down in 10 minutes");
         } else {
             _state.staConnected = false;
             WiFi.mode(WIFI_AP);
@@ -229,8 +237,15 @@ void WiFiManager::initCaptivePortal() {
 
         _state.staEnabled = false;
         _state.staConnected = false;
+        _state.apShutdownTime = 0;  // Cancel AP shutdown
         WiFi.disconnect(true);
         WiFi.mode(WIFI_AP);
+
+        if (!_state.apActive) {
+            _state.apActive = true;
+            setupAccessPoint();
+            _dnsServer.start(53, "*", WiFi.softAPIP());
+        }
 
         _state.broadcastIP = IPAddress(192, 168, 4, 255);
 
@@ -282,7 +297,9 @@ void WiFiManager::connectToSavedWiFi() {
         _state.staConnected = true;
         _state.broadcastIP = WiFi.localIP();
         _state.broadcastIP[3] = 255;
+        _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
         Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.println("AP will shut down in 10 minutes");
     } else {
         _state.staConnected = false;
         WiFi.mode(WIFI_AP);  // Revert to AP-only mode when connection fails
@@ -291,11 +308,25 @@ void WiFiManager::connectToSavedWiFi() {
 }
 
 void WiFiManager::loop() {
-    // Process DNS requests
-    _dnsServer.processNextRequest();
+    // Process DNS requests (only when AP is active)
+    if (_state.apActive) {
+        _dnsServer.processNextRequest();
+    }
 
     // Update connection status
     updateConnectionStatus();
+
+    // Check if it's time to shut down the AP
+    if (_state.apShutdownTime > 0 && millis() > _state.apShutdownTime && _state.staConnected) {
+        Serial.println("Shutting down AP, switching to STA-only with modem sleep");
+        _dnsServer.stop();
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        _state.apActive = false;
+        _state.apShutdownTime = 0;
+        Serial.printf("Now in STA-only mode, IP: %s\n", WiFi.localIP().toString().c_str());
+    }
 }
 
 void WiFiManager::updateConnectionStatus() {
@@ -308,6 +339,16 @@ void WiFiManager::updateConnectionStatus() {
         _state.staConnected = false;
         _state.broadcastIP = IPAddress(192, 168, 4, 255);
         Serial.println("WiFi connection lost, using AP broadcast");
+
+        // If AP was shut down, bring it back so user can reconfigure
+        if (!_state.apActive) {
+            Serial.println("Re-enabling AP for reconfiguration");
+            esp_wifi_set_ps(WIFI_PS_NONE);
+            WiFi.mode(WIFI_AP_STA);
+            setupAccessPoint();
+            _dnsServer.start(53, "*", WiFi.softAPIP());
+            _state.apActive = true;
+        }
     }
 }
 
@@ -325,6 +366,10 @@ int WiFiManager::getClientCount() const {
 
 bool WiFiManager::isSTAConnected() const {
     return _state.staConnected;
+}
+
+bool WiFiManager::isAPActive() const {
+    return _state.apActive;
 }
 
 IPAddress WiFiManager::getSTAIP() const {
