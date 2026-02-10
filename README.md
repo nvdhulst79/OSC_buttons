@@ -22,6 +22,7 @@ I gutted and modified a cheap computer mouse in order to have an actor discretel
 - mDNS support: access the web interface at `http://osc-muis.local` when connected to a WiFi network
 - Test button in the web interface to verify OSC connectivity
 - Battery level display (requires external voltage divider, see below)
+- Deep sleep when docked (via reed switch + magnet), wake on button press
 - All settings persist across reboots in flash memory
 
 ## Hardware
@@ -30,15 +31,24 @@ I gutted and modified a cheap computer mouse in order to have an actor discretel
 
 - Seeed XIAO ESP32-C3
 - 1 or 2 momentary push buttons (normally open)
+- NO (normally open) reed switch for dock detection
+- Neodymium magnet embedded in the charging dock
 
 ### Wiring
 
-The buttons connect between the designated pins and GND. Internal pull-up resistors are used, so no external resistors are needed.
+The buttons and reed switch connect between their designated pins and GND. Internal pull-up resistors are used, so no external resistors are needed.
 
 ```
-Button 1: D1 (GPIO3) ---[button]--- GND
-Button 2: D2 (GPIO4) ---[button]--- GND
+Button 1:    D1 (GPIO3) ---[button NO]------- GND
+Button 2:    D2 (GPIO4) ---[button NO]------- GND
+Reed switch: D3 (GPIO5) ---[reed switch NO]-- GND
 ```
+
+### Dock / deep sleep
+
+A normally open (NO) reed switch on D3 detects when the device is placed on its charging dock (which contains a neodymium magnet). When the magnet closes the reed switch, D3 is pulled LOW and the device enters deep sleep after 500ms. A NO switch is used so that a broken wire (pin stays HIGH via pull-up) keeps the device awake rather than sleeping — prioritizing reliability during performance over battery life in storage.
+
+To wake the device, press button 1 (D1). This triggers a full reboot — WiFi reconnects in 2-3 seconds. The first button press is consumed by the wake and does not send an OSC command.
 
 ### Battery monitoring (optional)
 

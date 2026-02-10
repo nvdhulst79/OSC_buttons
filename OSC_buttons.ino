@@ -15,6 +15,7 @@
 
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
+#include "esp_sleep.h"
 #include "wifi_manager.h"
 #include "osc_manager.h"
 
@@ -25,10 +26,16 @@
 const int BUTTON_1_PIN = D1;  // GPIO3
 const int BUTTON_2_PIN = D2;  // GPIO4
 
+// Reed switch pin — NO switch between D3 and GND
+// No magnet (in use): switch open → HIGH (pull-up) → normal operation
+// Magnet present (on dock): switch closes → LOW → deep sleep
+const int REED_SWITCH_PIN = D3;  // GPIO5
+
 // Debounce settings
 // This is a cooldown after the initial press — the ISR fires instantly (no lag),
 // but then ignores all edges (including release bounce) for this duration.
 const unsigned long DEBOUNCE_MS = 800;
+const unsigned long DOCK_DEBOUNCE_MS = 500;  // Reed switch debounce for dock detection
 
 // === Global variables ===
 WiFiUDP udp;
@@ -82,6 +89,22 @@ void handleButtons() {
 }
 
 
+// === Deep Sleep ===
+void enterDeepSleep() {
+    Serial.println("Dock detected — entering deep sleep");
+    Serial.println("Press button 1 (D1) to wake");
+    Serial.flush();
+
+    // Clean WiFi shutdown
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+
+    // Configure D1 (GPIO3) as wake source — wake on LOW (button press)
+    esp_deep_sleep_enable_gpio_wakeup(BIT(D1), ESP_GPIO_WAKEUP_GPIO_LOW);
+
+    esp_deep_sleep_start();
+}
+
 // === Battery Reading ===
 int getBatteryPercent() {
     // TODO: Implement actual battery reading via ADC
@@ -108,6 +131,9 @@ void setup() {
     // Configure button pins with internal pullup
     pinMode(BUTTON_1_PIN, INPUT_PULLUP);
     pinMode(BUTTON_2_PIN, INPUT_PULLUP);
+
+    // Reed switch — NO to GND, internal pullup keeps it HIGH when open (normal operation)
+    pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
 
     // Attach interrupts for immediate response
     attachInterrupt(digitalPinToInterrupt(BUTTON_1_PIN), onButton1Press, FALLING);
@@ -152,5 +178,16 @@ void loop() {
     // Handle test request from web interface
     if (oscManager.checkAndClearTestRequest()) {
         sendOSCButton(1);
+    }
+
+    // Check reed switch for dock detection (magnet closes NO switch → LOW)
+    static unsigned long reedLowSince = 0;
+    if (digitalRead(REED_SWITCH_PIN) == LOW) {
+        if (reedLowSince == 0) reedLowSince = millis();
+        if (millis() - reedLowSince > DOCK_DEBOUNCE_MS) {
+            enterDeepSleep();
+        }
+    } else {
+        reedLowSince = 0;
     }
 }
