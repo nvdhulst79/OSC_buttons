@@ -246,18 +246,51 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             .then(result => {
                 if (result.success) {
                     document.getElementById('scanResult').innerHTML =
-                        '<div class="message success">Connected! Page will reload...</div>';
-                    setTimeout(() => location.reload(), 2000);
+                        '<div class="message success">Connecting to ' + ssid + '...</div>';
+                    pollConnectStatus(0);
                 } else {
                     document.getElementById('scanResult').innerHTML =
-                        `<div class="message error">${result.message}</div>`;
+                        '<div class="message error">' + result.message + '</div>';
                 }
+            })
+            .catch(function(e) {
+                document.getElementById('scanResult').innerHTML =
+                    '<div class="message error">Request failed: ' + e.message + '</div>';
             });
+        }
+
+        function pollConnectStatus(attempts) {
+            // ~15 s ceiling (30 polls * 500 ms) — backend times out at 10 s
+            if (attempts > 30) {
+                document.getElementById('scanResult').innerHTML =
+                    '<div class="message error">Connection timeout</div>';
+                return;
+            }
+            setTimeout(function() {
+                fetch('/constatus')
+                    .then(function(r) { return r.json(); })
+                    .then(function(result) {
+                        if (result.status === 'connected') {
+                            document.getElementById('scanResult').innerHTML =
+                                '<div class="message success">Connected! IP: ' + result.ip + ' — page will reload...</div>';
+                            setTimeout(function() { location.reload(); }, 2000);
+                        } else if (result.status === 'failed') {
+                            document.getElementById('scanResult').innerHTML =
+                                '<div class="message error">Connection failed</div>';
+                        } else {
+                            pollConnectStatus(attempts + 1);
+                        }
+                    })
+                    .catch(function() { pollConnectStatus(attempts + 1); });
+            }, 500);
         }
 
         function disconnectWiFi() {
             fetch('/disconnect', {method: 'POST'})
-                .then(() => location.reload());
+                .then(function() {
+                    // Give the device a moment to actually tear down the STA + bring AP back
+                    setTimeout(function() { location.reload(); }, 1500);
+                });
         }
 
         function handleModeChange() {
@@ -318,6 +351,9 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('oscCurrentFormat').textContent = addressFormat;
                     document.getElementById('oscCurrentChannels').textContent =
                         'Btn1→' + button1Channel + ', Btn2→' + button2Channel;
+                } else {
+                    document.getElementById('oscMessage').innerHTML =
+                        '<div class="message error">' + (result.message || 'Save failed') + '</div>';
                 }
             });
         }

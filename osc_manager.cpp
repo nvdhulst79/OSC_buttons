@@ -82,7 +82,9 @@ void OSCManager::registerWebEndpoints(AsyncWebServer& webServer) {
         String json = "{";
         json += "\"port\":" + String(_oscInstance->_state.port) + ",";
         json += "\"targetip\":\"" + _oscInstance->_state.targetIP + "\",";
-        json += "\"addressFormat\":\"" + _oscInstance->_state.addressFormat + "\"";
+        json += "\"addressFormat\":\"" + _oscInstance->_state.addressFormat + "\",";
+        json += "\"button1Channel\":" + String(_oscInstance->_state.button1Channel) + ",";
+        json += "\"button2Channel\":" + String(_oscInstance->_state.button2Channel);
         json += "}";
         request->send(200, "application/json", json);
     });
@@ -105,7 +107,17 @@ void OSCManager::registerWebEndpoints(AsyncWebServer& webServer) {
         }
 
         if (request->hasParam("targetip", true)) {
-            _oscInstance->_state.targetIP = request->getParam("targetip", true)->value();
+            String newTargetIP = request->getParam("targetip", true)->value();
+            // Validate: empty is OK (means broadcast), otherwise must parse as a valid IPv4 address
+            if (newTargetIP.length() > 0) {
+                IPAddress test;
+                if (!test.fromString(newTargetIP)) {
+                    request->send(200, "application/json",
+                        "{\"success\":false,\"message\":\"Invalid target IP — must be a valid IPv4 address (e.g. 192.168.1.10) or empty for broadcast\"}");
+                    return;
+                }
+            }
+            _oscInstance->_state.targetIP = newTargetIP;
             changed = true;
         }
 

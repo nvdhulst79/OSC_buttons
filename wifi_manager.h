@@ -25,6 +25,14 @@ struct WiFiManagerConfig {
     int displayPort;             // Port number to display in portal (e.g., OSC port)
 };
 
+// Connection attempt state (for non-blocking /connect handling)
+enum WiFiConnectResult {
+    WIFI_CONN_IDLE,
+    WIFI_CONN_CONNECTING,
+    WIFI_CONN_SUCCESS,
+    WIFI_CONN_FAILED
+};
+
 // Runtime state of the WiFi manager
 struct WiFiManagerState {
     String staSSID;
@@ -37,6 +45,14 @@ struct WiFiManagerState {
     // AP lifecycle
     bool apActive;               // Whether the AP is currently running
     unsigned long apShutdownTime; // millis() when AP should shut down (0 = no shutdown scheduled)
+
+    // Deferred connect/disconnect requests (set from async HTTP handlers, processed in loop())
+    String pendingSSID;
+    String pendingPassword;
+    volatile bool connectRequested;
+    volatile bool disconnectRequested;
+    unsigned long connectStartTime;
+    WiFiConnectResult connectResult;
 };
 
 // Default configuration values
@@ -49,6 +65,10 @@ public:
 
     // Initialize with configuration (call in setup)
     void begin(const WiFiManagerConfig& config);
+
+    // Start the web server. Call this *after* any external modules
+    // (e.g. OSCManager) have registered their routes via getWebServer().
+    void startWebServer();
 
     // Process WiFi manager tasks (call in loop)
     void loop();
@@ -103,6 +123,7 @@ private:
     void loadSavedWiFi();
     void connectToSavedWiFi();
     void updateConnectionStatus();
+    void processWiFiRequests();
 };
 
 #endif

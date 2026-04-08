@@ -50,6 +50,10 @@ WiFiManager::WiFiManager() : _webServer(80) {
     _state.broadcastIP = IPAddress(192, 168, 4, 255);
     _state.apActive = true;
     _state.apShutdownTime = 0;
+    _state.connectRequested = false;
+    _state.disconnectRequested = false;
+    _state.connectStartTime = 0;
+    _state.connectResult = WIFI_CONN_IDLE;
 }
 
 void WiFiManager::begin(const WiFiManagerConfig& config) {
@@ -124,7 +128,7 @@ void WiFiManager::initCaptivePortal() {
 
     // Serve the main portal page
     _webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", PORTAL_HTML, processTemplate);
+        request->send(200, "text/html", PORTAL_HTML, processTemplate);
     });
 
     // Captive portal detection endpoints
@@ -184,80 +188,44 @@ void WiFiManager::initCaptivePortal() {
         request->send(200, "application/json", json);
     });
 
-    // Connect to a network
+    // Connect to a network — defers actual work to loop() to keep async handler non-blocking
     _webServer.on("/connect", HTTP_POST, [this](AsyncWebServerRequest *request) {
         if (!request->hasParam("ssid", true) || !request->hasParam("password", true)) {
             request->send(200, "application/json", "{\"success\":false,\"message\":\"Missing parameters\"}");
             return;
         }
 
-        _state.staSSID = request->getParam("ssid", true)->value();
-        _state.staPassword = request->getParam("password", true)->value();
-        _state.staEnabled = true;
+        _state.pendingSSID = request->getParam("ssid", true)->value();
+        _state.pendingPassword = request->getParam("password", true)->value();
+        _state.connectResult = WIFI_CONN_IDLE;
+        _state.connectRequested = true;
 
-        // Save credentials
-        _preferences.begin("wifi", false);
-        _preferences.putString("ssid", _state.staSSID);
-        _preferences.putString("password", _state.staPassword);
-        _preferences.putBool("enabled", true);
-        _preferences.end();
-
-        // Attempt connection
-        WiFi.mode(WIFI_AP_STA);
-        WiFi.disconnect();  // Ensure clean state before new connection
-        WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
-
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-            delay(500);
-            attempts++;
-        }
-
-        if (WiFi.status() == WL_CONNECTED) {
-            _state.staConnected = true;
-            _state.broadcastIP = WiFi.localIP();
-            _state.broadcastIP[3] = 255;
-            _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
-
-            if (MDNS.begin("osc-muis")) {
-                MDNS.addService("http", "tcp", 80);
-                Serial.println("mDNS started: http://osc-muis.local");
-            }
-
-            String response = "{\"success\":true,\"ip\":\"" + WiFi.localIP().toString() + "\"}";
-            request->send(200, "application/json", response);
-            Serial.printf("Connected to %s, IP: %s\n", _state.staSSID.c_str(), WiFi.localIP().toString().c_str());
-            Serial.println("AP will shut down in 10 minutes");
-        } else {
-            _state.staConnected = false;
-            WiFi.mode(WIFI_AP);
-            request->send(200, "application/json", "{\"success\":false,\"message\":\"Connection failed\"}");
-        }
+        request->send(200, "application/json", "{\"success\":true,\"status\":\"connecting\"}");
     });
 
-    // Disconnect from network
-    _webServer.on("/disconnect", HTTP_POST, [this](AsyncWebServerRequest *request) {
-        _preferences.begin("wifi", false);
-        _preferences.putBool("enabled", false);
-        _preferences.end();
-
-        _state.staEnabled = false;
-        _state.staConnected = false;
-        _state.apShutdownTime = 0;  // Cancel AP shutdown
-        MDNS.end();
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_AP);
-
-        if (!_state.apActive) {
-            _state.apActive = true;
-            setupAccessPoint();
-            _dnsServer.start(53, "*", WiFi.softAPIP());
+    // Poll connection status (called by frontend after POST /connect)
+    _webServer.on("/constatus", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        const char* status;
+        switch (_state.connectResult) {
+            case WIFI_CONN_CONNECTING: status = "connecting"; break;
+            case WIFI_CONN_SUCCESS:    status = "connected";  break;
+            case WIFI_CONN_FAILED:     status = "failed";     break;
+            default:                   status = "idle";       break;
         }
+        String json = "{\"status\":\"";
+        json += status;
+        json += "\"";
+        if (_state.connectResult == WIFI_CONN_SUCCESS) {
+            json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+        }
+        json += "}";
+        request->send(200, "application/json", json);
+    });
 
-        _state.broadcastIP = IPAddress(192, 168, 4, 255);
-
+    // Disconnect from network — defers actual work to loop()
+    _webServer.on("/disconnect", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        _state.disconnectRequested = true;
         request->send(200, "application/json", "{\"success\":true}");
-        Serial.println("Disconnected from WiFi, AP only mode");
     });
 
     // Handle all other requests
@@ -265,13 +233,20 @@ void WiFiManager::initCaptivePortal() {
         request->redirect("/");
     });
 
-    _webServer.begin();
+    // NOTE: _webServer.begin() is intentionally NOT called here.
+    // External modules (e.g. OSCManager) need a chance to register their
+    // routes first; the sketch must call startWebServer() afterwards.
 
     // Start initial WiFi scan
     WiFi.scanNetworks(true);
 
-    Serial.println("Captive portal started");
-    Serial.printf("Portal available at http://%s\n", WiFi.softAPIP().toString().c_str());
+    Serial.println("Captive portal initialized");
+    Serial.printf("Portal will be available at http://%s\n", WiFi.softAPIP().toString().c_str());
+}
+
+void WiFiManager::startWebServer() {
+    _webServer.begin();
+    Serial.println("Web server started");
 }
 
 void WiFiManager::loadSavedWiFi() {
@@ -289,34 +264,16 @@ void WiFiManager::loadSavedWiFi() {
 void WiFiManager::connectToSavedWiFi() {
     if (!_state.staEnabled || _state.staSSID.length() == 0) return;
 
-    Serial.printf("Connecting to saved WiFi: %s\n", _state.staSSID.c_str());
+    Serial.printf("Starting async connect to saved WiFi: %s\n", _state.staSSID.c_str());
+
+    // Kick off the connection non-blockingly. The state machine in
+    // processWiFiRequests() will observe completion (or timeout) from loop()
+    // and handle the success/failure paths uniformly with web-initiated connects.
     WiFi.mode(WIFI_AP_STA);
     WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
 
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        _state.staConnected = true;
-        _state.broadcastIP = WiFi.localIP();
-        _state.broadcastIP[3] = 255;
-        _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
-        Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
-        Serial.println("AP will shut down in 10 minutes");
-
-        if (MDNS.begin("osc-muis")) {
-            MDNS.addService("http", "tcp", 80);
-            Serial.println("mDNS started: http://osc-muis.local");
-        }
-    } else {
-        _state.staConnected = false;
-        WiFi.mode(WIFI_AP);  // Revert to AP-only mode when connection fails
-        Serial.println("\nFailed to connect, reverted to AP-only mode");
-    }
+    _state.connectResult = WIFI_CONN_CONNECTING;
+    _state.connectStartTime = millis();
 }
 
 void WiFiManager::loop() {
@@ -325,11 +282,15 @@ void WiFiManager::loop() {
         _dnsServer.processNextRequest();
     }
 
+    // Handle deferred connect/disconnect requests from async HTTP handlers
+    processWiFiRequests();
+
     // Update connection status
     updateConnectionStatus();
 
-    // Check if it's time to shut down the AP
-    if (_state.apShutdownTime > 0 && millis() > _state.apShutdownTime && _state.staConnected) {
+    // Check if it's time to shut down the AP.
+    // Use signed-difference comparison so this stays correct across millis() rollover (~49 days).
+    if (_state.apShutdownTime > 0 && (int32_t)(millis() - _state.apShutdownTime) > 0 && _state.staConnected) {
         Serial.println("Shutting down AP, switching to STA-only with modem sleep");
         _dnsServer.stop();
         WiFi.softAPdisconnect(true);
@@ -341,13 +302,100 @@ void WiFiManager::loop() {
     }
 }
 
+void WiFiManager::processWiFiRequests() {
+    // Handle a pending disconnect request from /disconnect
+    if (_state.disconnectRequested) {
+        _state.disconnectRequested = false;
+        Serial.println("Processing deferred disconnect request");
+
+        _preferences.begin("wifi", false);
+        _preferences.putBool("enabled", false);
+        _preferences.end();
+
+        _state.staEnabled = false;
+        _state.staConnected = false;
+        _state.apShutdownTime = 0;  // Cancel AP shutdown
+        _state.connectResult = WIFI_CONN_IDLE;
+        MDNS.end();
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_AP);
+
+        if (!_state.apActive) {
+            _state.apActive = true;
+            setupAccessPoint();
+            _dnsServer.start(53, "*", WiFi.softAPIP());
+        }
+
+        _state.broadcastIP = IPAddress(192, 168, 4, 255);
+        Serial.println("Disconnected from WiFi, AP only mode");
+    }
+
+    // Handle a pending connect request from /connect
+    if (_state.connectRequested) {
+        _state.connectRequested = false;
+        Serial.printf("Processing deferred connect request to %s\n", _state.pendingSSID.c_str());
+
+        _state.staSSID = _state.pendingSSID;
+        _state.staPassword = _state.pendingPassword;
+        _state.staEnabled = true;
+
+        // Save credentials
+        _preferences.begin("wifi", false);
+        _preferences.putString("ssid", _state.staSSID);
+        _preferences.putString("password", _state.staPassword);
+        _preferences.putBool("enabled", true);
+        _preferences.end();
+
+        // Kick off connection (non-blocking — status polled below)
+        WiFi.mode(WIFI_AP_STA);
+        WiFi.disconnect();
+        WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
+
+        _state.connectResult = WIFI_CONN_CONNECTING;
+        _state.connectStartTime = millis();
+    }
+
+    // Poll an in-flight connection attempt
+    if (_state.connectResult == WIFI_CONN_CONNECTING) {
+        if (WiFi.status() == WL_CONNECTED) {
+            _state.staConnected = true;
+            _state.broadcastIP = WiFi.broadcastIP();  // honors actual subnet mask
+            _state.apShutdownTime = millis() + 600000;  // Shut down AP in 10 minutes
+            _state.connectResult = WIFI_CONN_SUCCESS;
+
+            // Tear down any previous mDNS instance before re-registering
+            // (some ESPmDNS versions silently fail a second begin() otherwise)
+            MDNS.end();
+            if (MDNS.begin("osc-muis")) {
+                MDNS.addService("http", "tcp", 80);
+                Serial.println("mDNS started: http://osc-muis.local");
+            }
+            Serial.printf("Connected to %s, IP: %s\n",
+                _state.staSSID.c_str(), WiFi.localIP().toString().c_str());
+            Serial.println("AP will shut down in 10 minutes");
+        } else if (millis() - _state.connectStartTime > 10000) {
+            _state.staConnected = false;
+            _state.connectResult = WIFI_CONN_FAILED;
+            WiFi.mode(WIFI_AP);
+            Serial.println("Deferred connection attempt failed (timeout)");
+        }
+    }
+}
+
 void WiFiManager::updateConnectionStatus() {
     if (_state.staEnabled && !_state.staConnected && WiFi.status() == WL_CONNECTED) {
         _state.staConnected = true;
-        _state.broadcastIP = WiFi.localIP();
-        _state.broadcastIP[3] = 255;
+        _state.broadcastIP = WiFi.broadcastIP();  // honors actual subnet mask
+        // Re-arm AP shutdown if AP is still up — otherwise we'd keep the AP forever
+        // after a reconnect (since it was zeroed when AP shut down or on disconnect).
+        if (_state.apActive) {
+            _state.apShutdownTime = millis() + 600000;
+            Serial.println("AP shutdown re-armed for 10 minutes");
+        }
         Serial.printf("WiFi reconnected, IP: %s\n", WiFi.localIP().toString().c_str());
 
+        // Tear down any previous mDNS instance before re-registering
+        MDNS.end();
         if (MDNS.begin("osc-muis")) {
             MDNS.addService("http", "tcp", 80);
             Serial.println("mDNS restarted: http://osc-muis.local");
@@ -419,11 +467,9 @@ std::vector<IPAddress> WiFiManager::getBroadcastIPAddresses() const {
     // Get all active network broadcast addresses
     wifi_mode_t mode = WiFi.getMode();
 
-    // Add STA network broadcast if connected
+    // Add STA network broadcast if connected (honors actual subnet mask, not just /24)
     if ((mode == WIFI_AP_STA || mode == WIFI_STA) && _state.staConnected) {
-        IPAddress staBroadcast = WiFi.localIP();
-        staBroadcast[3] = 255;
-        addresses.push_back(staBroadcast);
+        addresses.push_back(WiFi.broadcastIP());
     }
 
     // Add AP network broadcast if AP is active

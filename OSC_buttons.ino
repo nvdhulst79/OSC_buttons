@@ -16,6 +16,7 @@
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
 #include "esp_sleep.h"
+#include "driver/gpio.h"
 #include "wifi_manager.h"
 #include "osc_manager.h"
 
@@ -117,6 +118,25 @@ int getBatteryPercent() {
 
 // === Setup ===
 void setup() {
+    // === EARLY DOCK CHECK ===
+    // Before Serial.begin() (which can wait up to 3s for USB CDC) or any WiFi init,
+    // check whether we're booting in the dock. If so, sleep immediately — otherwise
+    // every dock-while-powered cycle would burn ~10 s of WiFi setup.
+    //
+    // We still need to configure D1 (wake source) so we can come back out of sleep:
+    // pull-up enabled and latched, just like the normal sleep path.
+    pinMode(BUTTON_1_PIN, INPUT_PULLUP);
+    pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
+    delayMicroseconds(100);  // Let pull-ups settle before reading
+
+    if (digitalRead(REED_SWITCH_PIN) == LOW) {
+        // Docked — sleep immediately. No serial output (Serial not yet up).
+        gpio_hold_en(GPIO_NUM_3);  // hold D1 pull-up across deep sleep
+        gpio_deep_sleep_hold_en();
+        esp_deep_sleep_enable_gpio_wakeup(BIT(D1), ESP_GPIO_WAKEUP_GPIO_LOW);
+        esp_deep_sleep_start();
+    }
+
     Serial.begin(115200);
     // Wait for USB CDC to be ready (essential for ESP32-C3 native USB)
     unsigned long serialStart = millis();
@@ -128,12 +148,16 @@ void setup() {
     Serial.println("\n\n=== ESP32-C3 OSC Button Controller ===");
     Serial.println("Serial connected!");
 
-    // Configure button pins with internal pullup
-    pinMode(BUTTON_1_PIN, INPUT_PULLUP);
+    // Button 2 pin (BUTTON_1_PIN and REED_SWITCH_PIN already configured above)
     pinMode(BUTTON_2_PIN, INPUT_PULLUP);
 
-    // Reed switch — NO to GND, internal pullup keeps it HIGH when open (normal operation)
-    pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
+    // Latch the button pads so their pull-ups survive deep sleep.
+    // D1 is the wake source; D2 is held too so its input doesn't float during sleep
+    // (saves a tiny bit of leakage current). REED_SWITCH_PIN doesn't need this —
+    // we're never asleep when the reed switch matters.
+    gpio_hold_en(GPIO_NUM_3);  // D1 / BUTTON_1_PIN
+    gpio_hold_en(GPIO_NUM_4);  // D2 / BUTTON_2_PIN
+    gpio_deep_sleep_hold_en();
 
     // Attach interrupts for immediate response
     attachInterrupt(digitalPinToInterrupt(BUTTON_1_PIN), onButton1Press, FALLING);
@@ -153,6 +177,10 @@ void setup() {
 
     // Initialize OSC manager (registers web endpoints and template callback)
     oscManager.begin(wifiManager.getWebServer(), wifiManager);
+
+    // Now that all routes are registered, start the web server.
+    // (Routes must be added before begin() — onNotFound can otherwise intercept them.)
+    wifiManager.startWebServer();
 
     // Start UDP for OSC (use configured port for listening, though we mainly send)
     udp.begin(oscManager.getPort());
