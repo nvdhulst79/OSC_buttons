@@ -65,6 +65,10 @@ void WiFiManager::begin(const WiFiManagerConfig& config) {
     loadSavedWiFi();
 
     // Set up WiFi Access Point
+    WiFi.disconnect(true);
+    delay(100);
+    WiFi.mode(WIFI_AP);
+    delay(100);
     setupAccessPoint();
 
     // Connect to saved WiFi if available
@@ -76,10 +80,8 @@ void WiFiManager::begin(const WiFiManagerConfig& config) {
 
 void WiFiManager::setupAccessPoint() {
     Serial.println("Starting WiFi Access Point...");
-
-    // Disconnect any previous WiFi state
-    WiFi.disconnect(true);
-    delay(100);
+    // NOTE: caller is responsible for setting WiFi mode (WIFI_AP or WIFI_AP_STA)
+    // and calling WiFi.disconnect() if needed, before calling this function.
 
     // Set WiFi country code
     if (_config.countryCode && strlen(_config.countryCode) > 0) {
@@ -91,10 +93,6 @@ void WiFiManager::setupAccessPoint() {
     IPAddress localIP(192, 168, 4, 1);
     IPAddress gateway(192, 168, 4, 1);
     IPAddress subnet(255, 255, 255, 0);
-
-    Serial.println("Setting WiFi mode to AP...");
-    WiFi.mode(WIFI_AP);
-    delay(100);
 
     Serial.println("Configuring AP IP...");
     WiFi.softAPConfig(localIP, gateway, subnet);
@@ -405,14 +403,23 @@ void WiFiManager::updateConnectionStatus() {
         _state.broadcastIP = IPAddress(192, 168, 4, 255);
         Serial.println("WiFi connection lost, using AP broadcast");
 
-        // If AP was shut down, bring it back so user can reconfigure
+        // If AP was shut down, bring it back and try to reconnect STA
         if (!_state.apActive) {
-            Serial.println("Re-enabling AP for reconfiguration");
+            Serial.println("Re-enabling AP and attempting STA reconnect");
             esp_wifi_set_ps(WIFI_PS_NONE);
             WiFi.mode(WIFI_AP_STA);
+            delay(100);
             setupAccessPoint();
             _dnsServer.start(53, "*", WiFi.softAPIP());
             _state.apActive = true;
+        }
+
+        // Try to reconnect to saved network
+        if (_state.staEnabled && _state.staSSID.length() > 0) {
+            Serial.printf("Reconnecting to %s...\n", _state.staSSID.c_str());
+            WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
+            _state.connectResult = WIFI_CONN_CONNECTING;
+            _state.connectStartTime = millis();
         }
     }
 }

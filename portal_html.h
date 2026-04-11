@@ -386,26 +386,38 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             });
         }
 
-        // Poll button status
-        function pollButtons() {
-            fetch('/buttonstatus')
-                .then(function(r) { return r.json(); })
-                .then(function(s) {
-                    var b1 = document.getElementById('btn1state');
-                    var b2 = document.getElementById('btn2state');
-                    var box1 = document.getElementById('btn1box');
-                    var box2 = document.getElementById('btn2box');
-                    b1.textContent = s.button1 ? 'PRESSED' : 'Released';
-                    b2.textContent = s.button2 ? 'PRESSED' : 'Released';
-                    b1.style.color = s.button1 ? '#00d4aa' : '#555';
-                    b2.style.color = s.button2 ? '#00d4aa' : '#555';
-                    box1.style.borderLeft = s.button1 ? '3px solid #00d4aa' : '3px solid transparent';
-                    box2.style.borderLeft = s.button2 ? '3px solid #00d4aa' : '3px solid transparent';
-                })
-                .catch(function() {});
+        // Update button UI from state object
+        function updateButtons(s) {
+            var b1 = document.getElementById('btn1state');
+            var b2 = document.getElementById('btn2state');
+            var box1 = document.getElementById('btn1box');
+            var box2 = document.getElementById('btn2box');
+            b1.textContent = s.button1 ? 'PRESSED' : 'Released';
+            b2.textContent = s.button2 ? 'PRESSED' : 'Released';
+            b1.style.color = s.button1 ? '#00d4aa' : '#555';
+            b2.style.color = s.button2 ? '#00d4aa' : '#555';
+            box1.style.borderLeft = s.button1 ? '3px solid #00d4aa' : '3px solid transparent';
+            box2.style.borderLeft = s.button2 ? '3px solid #00d4aa' : '3px solid transparent';
         }
-        setInterval(pollButtons, 500);
-        pollButtons();
+
+        // Live updates via Server-Sent Events (single persistent connection).
+        // Falls back to HTTP polling for captive portal mini-browsers without SSE.
+        if (typeof EventSource !== 'undefined') {
+            var evtSource = new EventSource('/events');
+            evtSource.addEventListener('buttons', function(e) {
+                updateButtons(JSON.parse(e.data));
+            });
+            evtSource.addEventListener('battery', function(e) {
+                document.querySelector('.battery').textContent = e.data + '%%';
+            });
+        } else {
+            setInterval(function() {
+                fetch('/buttonstatus')
+                    .then(function(r) { return r.json(); })
+                    .then(updateButtons)
+                    .catch(function() {});
+            }, 2000);
+        }
 
         // Load current OSC format into dropdown
         window.addEventListener('load', function() {

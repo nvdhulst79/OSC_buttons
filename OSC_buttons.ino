@@ -15,6 +15,7 @@
 
 #include <WiFiUdp.h>
 #include <OSCMessage.h>
+#include <ESPAsyncWebServer.h>
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "wifi_manager.h"
@@ -32,6 +33,17 @@ const int BUTTON_2_PIN = D2;  // GPIO4
 // Magnet present (on dock): switch closes → LOW → deep sleep
 const int REED_SWITCH_PIN = D3;  // GPIO5
 
+// Set to false to disable dock detection when the reed sensor is not installed.
+// An unconnected pin (or open switch with wire) can pick up noise from the
+// charger and falsely trigger deep sleep — the wire acts as an antenna.
+// When re-enabling, consider these countermeasures:
+//   1. Add a 10k external pull-up resistor from D3 to 3.3V (much stronger than
+//      the internal ~45k, making noise-induced LOW readings very unlikely)
+//   2. Increase DOCK_DEBOUNCE_MS to 2000-3000ms (a real magnet easily sustains
+//      LOW that long, but noise won't)
+//   3. Both — belt and suspenders
+const bool REED_SENSOR_ENABLED = false;
+
 // Debounce settings
 // This is a cooldown after the initial press — the ISR fires instantly (no lag),
 // but then ignores all edges (including release bounce) for this duration.
@@ -42,6 +54,7 @@ const unsigned long DOCK_DEBOUNCE_MS = 500;  // Reed switch debounce for dock de
 WiFiUDP udp;
 WiFiManager wifiManager;
 OSCManager oscManager;
+AsyncEventSource events("/events");  // SSE endpoint — replaces HTTP polling
 
 volatile bool button1Pressed = false;
 volatile bool button2Pressed = false;
@@ -127,10 +140,10 @@ void setup() {
     // We still need to configure D1 (wake source) so we can come back out of sleep:
     // pull-up enabled and latched, just like the normal sleep path.
     pinMode(BUTTON_1_PIN, INPUT_PULLUP);
-    pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
+    if (REED_SENSOR_ENABLED) pinMode(REED_SWITCH_PIN, INPUT_PULLUP);
     delayMicroseconds(100);  // Let pull-ups settle before reading
 
-    if (digitalRead(REED_SWITCH_PIN) == LOW) {
+    if (REED_SENSOR_ENABLED && digitalRead(REED_SWITCH_PIN) == LOW) {
         // Docked — sleep immediately. No serial output (Serial not yet up).
         gpio_hold_en(GPIO_NUM_3);  // hold D1 pull-up across deep sleep
         gpio_deep_sleep_hold_en();
@@ -179,7 +192,7 @@ void setup() {
     // Initialize OSC manager (registers web endpoints and template callback)
     oscManager.begin(wifiManager.getWebServer(), wifiManager);
 
-    // Button status endpoint for web interface
+    // Button status endpoint (kept for external/debug use)
     AsyncWebServer& server = wifiManager.getWebServer();
     server.on("/buttonstatus", HTTP_GET, [](AsyncWebServerRequest *request) {
         String json = "{\"button1\":";
@@ -189,6 +202,23 @@ void setup() {
         json += "}";
         request->send(200, "application/json", json);
     });
+
+    // Server-Sent Events — pushes button + battery state over a single persistent
+    // connection instead of the client polling /buttonstatus every 500 ms.
+    // This avoids the memory fragmentation that kills ESPAsyncWebServer over hours.
+    events.onConnect([](AsyncEventSourceClient *client) {
+        // Send current state immediately so the UI doesn't show stale data
+        String btn = "{\"button1\":";
+        btn += (digitalRead(BUTTON_1_PIN) == LOW) ? "true" : "false";
+        btn += ",\"button2\":";
+        btn += (digitalRead(BUTTON_2_PIN) == LOW) ? "true" : "false";
+        btn += "}";
+        client->send(btn.c_str(), "buttons", millis(), 10000);
+
+        String bat = String(wifiManager.getBatteryPercent());
+        client->send(bat.c_str(), "battery", millis());
+    });
+    server.addHandler(&events);
 
     // Now that all routes are registered, start the web server.
     // (Routes must be added before begin() — onNotFound can otherwise intercept them.)
@@ -205,11 +235,28 @@ void loop() {
     // Process WiFi manager (captive portal, DNS, connection monitoring)
     wifiManager.loop();
 
-    // Update battery level periodically
+    // Update battery level periodically and push to connected web clients
     static unsigned long lastBatteryUpdate = 0;
     if (millis() - lastBatteryUpdate > 10000) {
-        wifiManager.setBatteryPercent(getBatteryPercent());
+        int pct = getBatteryPercent();
+        wifiManager.setBatteryPercent(pct);
+        events.send(String(pct).c_str(), "battery", millis());
         lastBatteryUpdate = millis();
+    }
+
+    // Push button state changes to connected web clients
+    static bool lastBtn1State = false, lastBtn2State = false;
+    bool btn1 = (digitalRead(BUTTON_1_PIN) == LOW);
+    bool btn2 = (digitalRead(BUTTON_2_PIN) == LOW);
+    if (btn1 != lastBtn1State || btn2 != lastBtn2State) {
+        lastBtn1State = btn1;
+        lastBtn2State = btn2;
+        String json = "{\"button1\":";
+        json += btn1 ? "true" : "false";
+        json += ",\"button2\":";
+        json += btn2 ? "true" : "false";
+        json += "}";
+        events.send(json.c_str(), "buttons", millis());
     }
 
     // Handle any pending button presses
@@ -221,13 +268,15 @@ void loop() {
     }
 
     // Check reed switch for dock detection (magnet closes NO switch → LOW)
-    static unsigned long reedLowSince = 0;
-    if (digitalRead(REED_SWITCH_PIN) == LOW) {
-        if (reedLowSince == 0) reedLowSince = millis();
-        if (millis() - reedLowSince > DOCK_DEBOUNCE_MS) {
-            enterDeepSleep();
+    if (REED_SENSOR_ENABLED) {
+        static unsigned long reedLowSince = 0;
+        if (digitalRead(REED_SWITCH_PIN) == LOW) {
+            if (reedLowSince == 0) reedLowSince = millis();
+            if (millis() - reedLowSince > DOCK_DEBOUNCE_MS) {
+                enterDeepSleep();
+            }
+        } else {
+            reedLowSince = 0;
         }
-    } else {
-        reedLowSince = 0;
     }
 }
