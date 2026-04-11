@@ -94,6 +94,20 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
         </div>
 
 
+        <div class="status" id="buttonStatus">
+            <h2 style="margin-top: 0; color: #fff; font-size: 1.1em;">Buttons</h2>
+            <div style="display: flex; gap: 15px;">
+                <div style="flex: 1; text-align: center; padding: 12px; border-radius: 6px; background: #0f0f23;" id="btn1box">
+                    <div style="color: #888; font-size: 0.85em;">Button 1</div>
+                    <div id="btn1state" style="font-size: 1.2em; margin-top: 4px; color: #555;">-</div>
+                </div>
+                <div style="flex: 1; text-align: center; padding: 12px; border-radius: 6px; background: #0f0f23;" id="btn2box">
+                    <div style="color: #888; font-size: 0.85em;">Button 2</div>
+                    <div id="btn2state" style="font-size: 1.2em; margin-top: 4px; color: #555;">-</div>
+                </div>
+            </div>
+        </div>
+
         <div class="section">
             <h2>WiFi Configuration</h2>
             <div id="scanResult"></div>
@@ -371,6 +385,27 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                     '<div class="message error">Test failed</div>';
             });
         }
+
+        // Poll button status
+        function pollButtons() {
+            fetch('/buttonstatus')
+                .then(function(r) { return r.json(); })
+                .then(function(s) {
+                    var b1 = document.getElementById('btn1state');
+                    var b2 = document.getElementById('btn2state');
+                    var box1 = document.getElementById('btn1box');
+                    var box2 = document.getElementById('btn2box');
+                    b1.textContent = s.button1 ? 'PRESSED' : 'Released';
+                    b2.textContent = s.button2 ? 'PRESSED' : 'Released';
+                    b1.style.color = s.button1 ? '#00d4aa' : '#555';
+                    b2.style.color = s.button2 ? '#00d4aa' : '#555';
+                    box1.style.borderLeft = s.button1 ? '3px solid #00d4aa' : '3px solid transparent';
+                    box2.style.borderLeft = s.button2 ? '3px solid #00d4aa' : '3px solid transparent';
+                })
+                .catch(function() {});
+        }
+        setInterval(pollButtons, 500);
+        pollButtons();
 
         // Load current OSC format into dropdown
         window.addEventListener('load', function() {

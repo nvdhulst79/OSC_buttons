@@ -108,12 +108,13 @@ void enterDeepSleep() {
 
 // === Battery Reading ===
 int getBatteryPercent() {
-    // TODO: Implement actual battery reading via ADC
-    // Example for voltage divider on A0:
-    // int raw = analogRead(A0);
-    // float voltage = raw * (3.3 / 4095.0) * 2;  // Assuming 1:1 divider
-    // return map(constrain(voltage * 100, 320, 420), 320, 420, 0, 100);
-    return 100;  // Placeholder
+    // Average multiple samples to reduce ESP32 ADC noise
+    long sum = 0;
+    for (int i = 0; i < 16; i++) sum += analogRead(A0);
+    int raw = sum / 16;
+    // 2x 220k resistor divider: Vbat = ADC voltage * 2
+    float voltage = raw * (3.3 / 4095.0) * 2;
+    return constrain(map(voltage * 100, 320, 420, 0, 100), 0, 100);
 }
 
 // === Setup ===
@@ -177,6 +178,17 @@ void setup() {
 
     // Initialize OSC manager (registers web endpoints and template callback)
     oscManager.begin(wifiManager.getWebServer(), wifiManager);
+
+    // Button status endpoint for web interface
+    AsyncWebServer& server = wifiManager.getWebServer();
+    server.on("/buttonstatus", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String json = "{\"button1\":";
+        json += (digitalRead(BUTTON_1_PIN) == LOW) ? "true" : "false";
+        json += ",\"button2\":";
+        json += (digitalRead(BUTTON_2_PIN) == LOW) ? "true" : "false";
+        json += "}";
+        request->send(200, "application/json", json);
+    });
 
     // Now that all routes are registered, start the web server.
     // (Routes must be added before begin() — onNotFound can otherwise intercept them.)
