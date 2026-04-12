@@ -120,14 +120,56 @@ void enterDeepSleep() {
 }
 
 // === Battery Reading ===
+// Piecewise-linear LiPo discharge curve: resting cell voltage (mV) -> SoC (%).
+// Rough single-cell LiPo under light load; the knee around 3.7 V is what
+// makes the linear 3.20-4.20 V mapping misleading at the ends of the range.
+static int lipoPercentFromMillivolts(int mv) {
+    struct Point { int mv; int pct; };
+    static const Point curve[] = {
+        {3300,   0},
+        {3400,   5},
+        {3500,  10},
+        {3600,  20},
+        {3700,  40},
+        {3800,  55},
+        {3900,  65},
+        {4000,  80},
+        {4100,  90},
+        {4200, 100},
+    };
+    const int n = sizeof(curve) / sizeof(curve[0]);
+    if (mv <= curve[0].mv) return 0;
+    if (mv >= curve[n - 1].mv) return 100;
+    for (int i = 1; i < n; i++) {
+        if (mv <= curve[i].mv) {
+            const Point& a = curve[i - 1];
+            const Point& b = curve[i];
+            return a.pct + (long)(mv - a.mv) * (b.pct - a.pct) / (b.mv - a.mv);
+        }
+    }
+    return 100;
+}
+
 int getBatteryPercent() {
-    // Average multiple samples to reduce ESP32 ADC noise
-    long sum = 0;
-    for (int i = 0; i < 16; i++) sum += analogRead(A0);
-    int raw = sum / 16;
+    // analogReadMilliVolts() applies the factory eFuse ADC calibration, so we
+    // skip the raw->mV math and get a much more accurate absolute voltage.
+    long sumMv = 0;
+    for (int i = 0; i < 16; i++) sumMv += analogReadMilliVolts(A0);
+    int adcMv = sumMv / 16;
     // 2x 220k resistor divider: Vbat = ADC voltage * 2
-    float voltage = raw * (3.3 / 4095.0) * 2;
-    return constrain(map(voltage * 100, 320, 420, 0, 100), 0, 100);
+    int batMv = adcMv * 2;
+
+    // Exponential moving average across calls (alpha = 0.25). Hides single-
+    // sample jitter from WiFi TX bursts and the high-impedance divider while
+    // still tracking real movement within a handful of updates.
+    static int emaMv = 0;
+    if (emaMv == 0) {
+        emaMv = batMv;  // seed on first call so we don't creep up from zero
+    } else {
+        emaMv = (batMv + emaMv * 3) / 4;
+    }
+
+    return lipoPercentFromMillivolts(emaMv);
 }
 
 // === Setup ===
