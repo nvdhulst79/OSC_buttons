@@ -61,6 +61,11 @@ volatile bool button2Pressed = false;
 volatile unsigned long lastButton1Interrupt = 0;
 volatile unsigned long lastButton2Interrupt = 0;
 
+// Set by the /sleep web endpoint; loop() picks it up and enters deep sleep
+// after a short delay so the HTTP response makes it back to the browser.
+volatile bool sleepRequested = false;
+unsigned long sleepRequestedAt = 0;
+
 // === Interrupt handlers (with debounce) ===
 void IRAM_ATTR onButton1Press() {
     unsigned long now = millis();
@@ -105,7 +110,7 @@ void handleButtons() {
 
 // === Deep Sleep ===
 void enterDeepSleep() {
-    Serial.println("Dock detected — entering deep sleep");
+    Serial.println("Entering deep sleep");
     Serial.println("Press button 1 (D1) to wake");
     Serial.flush();
 
@@ -245,6 +250,15 @@ void setup() {
         request->send(200, "application/json", json);
     });
 
+    // Deep sleep on request — flag is picked up by loop() after a short delay
+    // so this response reaches the browser before WiFi is torn down.
+    server.on("/sleep", HTTP_POST, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", "{\"success\":true}");
+        sleepRequested = true;
+        sleepRequestedAt = millis();
+        Serial.println("Deep sleep requested via web UI");
+    });
+
     // Server-Sent Events — pushes button + battery state over a single persistent
     // connection instead of the client polling /buttonstatus every 500 ms.
     // This avoids the memory fragmentation that kills ESPAsyncWebServer over hours.
@@ -307,6 +321,11 @@ void loop() {
     // Handle test request from web interface
     if (oscManager.checkAndClearTestRequest()) {
         sendOSCButton(1);
+    }
+
+    // Web-requested deep sleep — wait briefly so the HTTP response is flushed.
+    if (sleepRequested && millis() - sleepRequestedAt > 500) {
+        enterDeepSleep();
     }
 
     // Check reed switch for dock detection (magnet closes NO switch → LOW)

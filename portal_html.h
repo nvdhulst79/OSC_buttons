@@ -143,7 +143,7 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             </div>
             <div class="status-row">
                 <span class="label">Button Channels</span>
-                <span class="value" id="oscCurrentChannels">Btn1→%OSC_BUTTON1_CHANNEL%, Btn2→%OSC_BUTTON2_CHANNEL%</span>
+                <span class="value" id="oscCurrentChannels">Btn1&rarr;%OSC_BUTTON1_CHANNEL%, Btn2&rarr;%OSC_BUTTON2_CHANNEL%</span>
             </div>
 
             <input type="text" id="oscTargetIP" placeholder="Target IP (empty = broadcast)" value="">
@@ -161,6 +161,13 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
             <button class="btn-primary" onclick="saveOSC()">Save OSC Settings</button>
             <button class="btn-secondary" onclick="testOSC()">Test Button 1</button>
             <div id="oscMessage"></div>
+        </div>
+
+        <div class="section">
+            <h2>Power</h2>
+            <p style="color: #888; font-size: 0.9em; margin-top: 0;">Put the device to sleep to charge faster or save battery. Press Button 1 to wake.</p>
+            <button class="btn-danger" onclick="sleepDevice()">Sleep Now</button>
+            <div id="sleepMessage"></div>
         </div>
 
         <p style="color: #555; font-size: 0.75em; text-align: center; margin-top: 30px;">OSC-Muis - Niels van der Hulst 2026</p>
@@ -369,6 +376,20 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('oscMessage').innerHTML =
                         '<div class="message error">' + (result.message || 'Save failed') + '</div>';
                 }
+            });
+        }
+
+        function sleepDevice() {
+            if (!confirm('Put device to sleep? Press Button 1 to wake.')) return;
+            fetch('/sleep', {method: 'POST'})
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+                document.getElementById('sleepMessage').innerHTML =
+                    '<div class="message success">Device sleeping &rarr; press Button 1 to wake.</div>';
+            })
+            .catch(function(e) {
+                document.getElementById('sleepMessage').innerHTML =
+                    '<div class="message error">Sleep request failed</div>';
             });
         }
 
