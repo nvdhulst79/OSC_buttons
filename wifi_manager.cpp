@@ -5,6 +5,11 @@
 #include "esp_wifi.h"
 #include <ESPmDNS.h>
 
+// 11 dBm (~12 mW) is well below the default 19.5 dBm but still enough to
+// reach typical venue WiFi at moderate distance. Halving TX power
+// noticeably reduces average current draw on a small LiPo.
+#define WIFI_TX_POWER WIFI_POWER_11dBm
+
 // Static instance pointers for callbacks
 static WiFiManager* _instance = nullptr;
 static const WiFiManagerConfig* _configPtr = nullptr;
@@ -30,6 +35,10 @@ static String processTemplate(const String& var) {
     if (var == "AP_SSID") return _configPtr ? String(_configPtr->apSSID) : "";
     if (var == "AP_IP") return WiFi.softAPIP().toString();
     if (var == "DISCONNECT_CLASS") return state.staConnected ? "" : "hidden";
+    // Show "Reconnect" only when there are saved creds and we're not currently connected
+    if (var == "RECONNECT_CLASS") return (state.staEnabled && !state.staConnected) ? "" : "hidden";
+    // Show "Switch to STA only" only when AP is up AND we have a usable STA link
+    if (var == "STAONLY_CLASS") return (state.apActive && state.staConnected) ? "" : "hidden";
     if (var == "PORTAL_TITLE") return _configPtr ? String(_configPtr->portalTitle) : "WiFi Manager";
     if (var == "PORTAL_SUBTITLE") return _configPtr ? String(_configPtr->portalSubtitle) : "";
 
@@ -52,6 +61,8 @@ WiFiManager::WiFiManager() : _webServer(80) {
     _state.apShutdownTime = 0;
     _state.connectRequested = false;
     _state.disconnectRequested = false;
+    _state.reconnectRequested = false;
+    _state.apOffRequested = false;
     _state.connectStartTime = 0;
     _state.connectResult = WIFI_CONN_IDLE;
 }
@@ -110,6 +121,10 @@ void WiFiManager::setupAccessPoint() {
     delay(1000);  // Give AP time to start
 
     if (success) {
+        // Apply reduced TX power for battery life. Must be called after the
+        // radio is up; mode changes can reset it so we re-apply elsewhere too.
+        WiFi.setTxPower(WIFI_TX_POWER);
+
         Serial.println("AP started successfully!");
         Serial.printf("  SSID: %s\n", _config.apSSID);
         Serial.printf("  IP: %s\n", WiFi.softAPIP().toString().c_str());
@@ -226,6 +241,55 @@ void WiFiManager::initCaptivePortal() {
         request->send(200, "application/json", "{\"success\":true}");
     });
 
+    // Retry the saved network — defers to loop(), reuses the connect state machine
+    _webServer.on("/reconnect", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        if (!_state.staEnabled || _state.staSSID.length() == 0) {
+            request->send(200, "application/json",
+                "{\"success\":false,\"message\":\"No saved network\"}");
+            return;
+        }
+        _state.reconnectRequested = true;
+        _state.connectResult = WIFI_CONN_IDLE;
+        request->send(200, "application/json", "{\"success\":true,\"status\":\"connecting\"}");
+    });
+
+    // Report which side of the radio the client is connected through.
+    // Used by the UI to hide actions that would disconnect the client itself
+    // (e.g. don't offer "Switch to STA only" to someone on the AP).
+    _webServer.on("/whoami", HTTP_GET, [](AsyncWebServerRequest *request) {
+        IPAddress clientIP = request->client()->remoteIP();
+        bool onAP = (clientIP[0] == 192 && clientIP[1] == 168 && clientIP[2] == 4);
+        String json = "{\"onAP\":";
+        json += onAP ? "true" : "false";
+        json += ",\"clientIP\":\"" + clientIP.toString() + "\"}";
+        request->send(200, "application/json", json);
+    });
+
+    // Switch to STA-only immediately — only valid when STA is connected.
+    // Defers to loop() so the response gets back before we tear down AP.
+    _webServer.on("/staonly", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        if (!_state.staConnected) {
+            request->send(200, "application/json",
+                "{\"success\":false,\"message\":\"Not connected to a station network\"}");
+            return;
+        }
+        if (!_state.apActive) {
+            request->send(200, "application/json",
+                "{\"success\":false,\"message\":\"AP already off\"}");
+            return;
+        }
+        // Refuse if the requester is on the AP — they'd kick themselves off.
+        // The UI normally hides the button in this case but check anyway.
+        IPAddress clientIP = request->client()->remoteIP();
+        if (clientIP[0] == 192 && clientIP[1] == 168 && clientIP[2] == 4) {
+            request->send(200, "application/json",
+                "{\"success\":false,\"message\":\"You are connected via the AP — switching off the AP would disconnect you\"}");
+            return;
+        }
+        _state.apOffRequested = true;
+        request->send(200, "application/json", "{\"success\":true}");
+    });
+
     // Handle all other requests
     _webServer.onNotFound([](AsyncWebServerRequest *request) {
         request->redirect("/");
@@ -268,6 +332,7 @@ void WiFiManager::connectToSavedWiFi() {
     // processWiFiRequests() will observe completion (or timeout) from loop()
     // and handle the success/failure paths uniformly with web-initiated connects.
     WiFi.mode(WIFI_AP_STA);
+    WiFi.setTxPower(WIFI_TX_POWER);  // Mode change can reset TX power
     WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
 
     _state.connectResult = WIFI_CONN_CONNECTING;
@@ -293,6 +358,7 @@ void WiFiManager::loop() {
         _dnsServer.stop();
         WiFi.softAPdisconnect(true);
         WiFi.mode(WIFI_STA);
+        WiFi.setTxPower(WIFI_TX_POWER);
         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         _state.apActive = false;
         _state.apShutdownTime = 0;
@@ -301,6 +367,30 @@ void WiFiManager::loop() {
 }
 
 void WiFiManager::processWiFiRequests() {
+    // Handle a pending reconnect request from /reconnect — reuses the existing
+    // connect state machine by feeding it the saved credentials.
+    if (_state.reconnectRequested) {
+        _state.reconnectRequested = false;
+        if (_state.staEnabled && _state.staSSID.length() > 0) {
+            Serial.printf("Processing /reconnect to %s\n", _state.staSSID.c_str());
+            _state.pendingSSID = _state.staSSID;
+            _state.pendingPassword = _state.staPassword;
+            _state.connectRequested = true;
+        }
+    }
+
+    // Handle a pending /staonly request — schedule immediate AP shutdown.
+    // The actual teardown happens in loop() via apShutdownTime, which already
+    // requires staConnected and runs the same path as the 10-min auto shutdown.
+    if (_state.apOffRequested) {
+        _state.apOffRequested = false;
+        if (_state.staConnected && _state.apActive) {
+            Serial.println("Processing /staonly — scheduling immediate AP shutdown");
+            // 500 ms grace so the HTTP response gets out cleanly
+            _state.apShutdownTime = millis() + 500;
+        }
+    }
+
     // Handle a pending disconnect request from /disconnect
     if (_state.disconnectRequested) {
         _state.disconnectRequested = false;
@@ -346,6 +436,7 @@ void WiFiManager::processWiFiRequests() {
 
         // Kick off connection (non-blocking — status polled below)
         WiFi.mode(WIFI_AP_STA);
+        WiFi.setTxPower(WIFI_TX_POWER);
         WiFi.disconnect();
         WiFi.begin(_state.staSSID.c_str(), _state.staPassword.c_str());
 

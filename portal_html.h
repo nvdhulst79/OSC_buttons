@@ -122,6 +122,14 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                 <button class="btn-primary" onclick="connectWiFi()">Connect</button>
             </div>
 
+            <div id="reconnectBtn" class="%RECONNECT_CLASS%">
+                <button class="btn-secondary" onclick="reconnectWiFi()">Reconnect to saved network</button>
+            </div>
+
+            <div id="staOnlyBtn" class="%STAONLY_CLASS%">
+                <button class="btn-secondary" onclick="switchToStaOnly()">Switch to Station only (saves power)</button>
+            </div>
+
             <div id="disconnectBtn" class="%DISCONNECT_CLASS%">
                 <button class="btn-danger" onclick="disconnectWiFi()">Disconnect from WiFi</button>
             </div>
@@ -314,6 +322,44 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                 });
         }
 
+        function reconnectWiFi() {
+            fetch('/reconnect', {method: 'POST'})
+                .then(function(r) { return r.json(); })
+                .then(function(result) {
+                    if (result.success) {
+                        document.getElementById('scanResult').innerHTML =
+                            '<div class="message success">Reconnecting to saved network...</div>';
+                        pollConnectStatus(0);
+                    } else {
+                        document.getElementById('scanResult').innerHTML =
+                            '<div class="message error">' + (result.message || 'Reconnect failed') + '</div>';
+                    }
+                })
+                .catch(function(e) {
+                    document.getElementById('scanResult').innerHTML =
+                        '<div class="message error">Request failed: ' + e.message + '</div>';
+                });
+        }
+
+        function switchToStaOnly() {
+            if (!confirm('Shut down the Access Point now? You will need to be on the same network (or reboot) to access this page again.')) return;
+            fetch('/staonly', {method: 'POST'})
+                .then(function(r) { return r.json(); })
+                .then(function(result) {
+                    if (result.success) {
+                        document.getElementById('scanResult').innerHTML =
+                            '<div class="message success">AP shutting down — Station only mode</div>';
+                    } else {
+                        document.getElementById('scanResult').innerHTML =
+                            '<div class="message error">' + (result.message || 'Request failed') + '</div>';
+                    }
+                })
+                .catch(function(e) {
+                    document.getElementById('scanResult').innerHTML =
+                        '<div class="message error">Request failed: ' + e.message + '</div>';
+                });
+        }
+
         function handleModeChange() {
             const mode = document.getElementById('oscMode').value;
             const customInput = document.getElementById('oscCustomFormat');
@@ -439,6 +485,17 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
                     .catch(function() {});
             }, 2000);
         }
+
+        // Hide "Switch to Station only" if the user is connected via the AP —
+        // pressing it would immediately disconnect them.
+        fetch('/whoami')
+            .then(function(r) { return r.json(); })
+            .then(function(info) {
+                if (info.onAP) {
+                    document.getElementById('staOnlyBtn').classList.add('hidden');
+                }
+            })
+            .catch(function() {});
 
         // Load current OSC format into dropdown
         window.addEventListener('load', function() {

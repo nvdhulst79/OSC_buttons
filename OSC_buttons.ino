@@ -283,6 +283,12 @@ void setup() {
     // Start UDP for OSC (use configured port for listening, though we mainly send)
     udp.begin(oscManager.getPort());
 
+    // Drop CPU from default 160 MHz to 80 MHz now that WiFi setup is done.
+    // Halves the active-mode current draw with no perceptible cost for this
+    // workload (button ISRs + occasional UDP send + low-traffic web UI).
+    setCpuFrequencyMhz(80);
+    Serial.printf("CPU clock set to %u MHz\n", getCpuFrequencyMhz());
+
     Serial.println("Ready! Waiting for button presses...");
 }
 
@@ -313,6 +319,24 @@ void loop() {
         json += btn2 ? "true" : "false";
         json += "}";
         events.send(json.c_str(), "buttons", millis());
+    }
+
+    // Hold-both-buttons soft reboot. The two OSC pulses fired at press-start
+    // are unavoidable (press is interrupt-driven) but acceptable for what is
+    // essentially an emergency-reboot gesture.
+    static unsigned long bothPressedSince = 0;
+    const unsigned long REBOOT_HOLD_MS = 3000;
+    if (btn1 && btn2) {
+        if (bothPressedSince == 0) {
+            bothPressedSince = millis();
+        } else if (millis() - bothPressedSince > REBOOT_HOLD_MS) {
+            Serial.println("Both buttons held — rebooting");
+            Serial.flush();
+            delay(50);
+            ESP.restart();
+        }
+    } else {
+        bothPressedSince = 0;
     }
 
     // Handle any pending button presses

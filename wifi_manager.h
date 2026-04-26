@@ -51,6 +51,8 @@ struct WiFiManagerState {
     String pendingPassword;
     volatile bool connectRequested;
     volatile bool disconnectRequested;
+    volatile bool reconnectRequested;   // /reconnect — retry saved network
+    volatile bool apOffRequested;       // /staonly — drop AP immediately (requires STA connected)
     unsigned long connectStartTime;
     WiFiConnectResult connectResult;
 };
